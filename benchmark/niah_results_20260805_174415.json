@@ -1,0 +1,70 @@
+[
+  {
+    "status": "ok",
+    "text": "</think:opensource>ALPHA-BRAVO-2824",
+    "ttft_s": 502.2430191619933,
+    "tpot_ms": 145.44464249956945,
+    "total_time_s": 503.57769286600524,
+    "num_tokens": 9,
+    "prompt_tokens": 160223,
+    "completion_tokens": 10,
+    "correct": true,
+    "position": "0%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824",
+    "needle_offset": 0
+  },
+  {
+    "status": "connection_error",
+    "text": "HTTPConnectionPool(host='localhost', port=8000): Read timed out.",
+    "correct": false,
+    "position": "25%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824"
+  },
+  {
+    "status": "ok",
+    "text": "</think:opensource>ALPHA-BRAVO-2824",
+    "ttft_s": 528.4843041279964,
+    "tpot_ms": 159.0384318751603,
+    "total_time_s": 529.9428802729963,
+    "num_tokens": 9,
+    "prompt_tokens": 160224,
+    "completion_tokens": 10,
+    "correct": true,
+    "position": "50%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824",
+    "needle_offset": 460735
+  },
+  {
+    "status": "ok",
+    "text": "</think:opensource>ALPHA-BRAVO-2824",
+    "ttft_s": 501.9787976360094,
+    "tpot_ms": 156.40551949945802,
+    "total_time_s": 503.4129402010003,
+    "num_tokens": 9,
+    "prompt_tokens": 160226,
+    "completion_tokens": 10,
+    "correct": true,
+    "position": "75%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824",
+    "needle_offset": 691101
+  },
+  {
+    "status": "ok",
+    "text": "</think:opensource>ALPHA-BRAVO-2824",
+    "ttft_s": 288.8846291480004,
+    "tpot_ms": 147.44490212433448,
+    "total_time_s": 290.2393489140086,
+    "num_tokens": 9,
+    "prompt_tokens": 160223,
+    "completion_tokens": 10,
+    "correct": true,
+    "position": "100%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824",
+    "needle_offset": 921468
+  }
+]

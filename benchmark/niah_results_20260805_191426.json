@@ -1,0 +1,42 @@
+[
+  {
+    "status": "connection_error",
+    "text": "HTTPConnectionPool(host='localhost', port=8000): Read timed out.",
+    "correct": false,
+    "position": "0%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824"
+  },
+  {
+    "status": "connection_error",
+    "text": "HTTPConnectionPool(host='localhost', port=8000): Read timed out.",
+    "correct": false,
+    "position": "25%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824"
+  },
+  {
+    "status": "connection_error",
+    "text": "HTTPConnectionPool(host='localhost', port=8000): Read timed out.",
+    "correct": false,
+    "position": "50%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824"
+  },
+  {
+    "status": "connection_error",
+    "text": "HTTPConnectionPool(host='localhost', port=8000): Read timed out.",
+    "correct": false,
+    "position": "75%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824"
+  },
+  {
+    "status": "connection_error",
+    "text": "HTTPConnectionPool(host='localhost', port=8000): Read timed out.",
+    "correct": false,
+    "position": "100%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824"
+  }
+]

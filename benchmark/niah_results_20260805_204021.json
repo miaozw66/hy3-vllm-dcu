@@ -1,0 +1,10 @@
+[
+  {
+    "status": "connection_error",
+    "text": "HTTPConnectionPool(host='localhost', port=8000): Read timed out.",
+    "correct": false,
+    "position": "50%",
+    "context_length": 262144,
+    "expected_passkey": "ALPHA-BRAVO-2824"
+  }
+]

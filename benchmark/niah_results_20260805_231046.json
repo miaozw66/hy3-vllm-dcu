@@ -1,0 +1,17 @@
+[
+  {
+    "status": "ok",
+    "text": "ALPHA-BRAVO-2824",
+    "ttft_s": 2.293158068001503,
+    "tpot_ms": 176.3897385008022,
+    "total_time_s": 3.8844112570077414,
+    "num_tokens": 9,
+    "prompt_tokens": 2865,
+    "completion_tokens": 10,
+    "correct": true,
+    "position": "50%",
+    "context_length": 4096,
+    "expected_passkey": "ALPHA-BRAVO-2824",
+    "needle_offset": 8136
+  }
+]

@@ -1,0 +1,33 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs
+*.log
+/logs/
+
+# Dump outputs
+/dumps/
+
+# Large test model copies
+/test12/
+/test12bf16/
+/test16/
+/test40/
+
+# Reference (MetaInfer golden dump, not our work)
+/reference/
+
+# Documentation (exclude from git)
+/docs/
+
+# Configs (personal editor config)
+/configs/
+
+# Web UI (not core)
+/web/
+
+# OS files
+.DS_Store
+Thumbs.db
