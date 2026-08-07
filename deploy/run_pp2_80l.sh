@@ -23,12 +23,8 @@ export RCCL_BUFFSIZE=8388608
 export NCCL_MIN_NCHANNELS=4
 export NCCL_PROTO=Simple
 export NCCL_ALGO=Ring
-# AITER: Enable Composable Kernel acceleration for Hygon DCU
-export VLLM_ROCM_USE_AITER=1
-export VLLM_ROCM_USE_AITER_LINEAR=1
-export VLLM_ROCM_USE_AITER_MOE=1
-export VLLM_ROCM_USE_AITER_RMSNORM=1
-export VLLM_ROCM_USE_AITER_MHA=1
+# AITER: Disabled — CK kernels not compiled for gfx928
+export VLLM_ROCM_USE_AITER=0
 # MoE tuning config
 export VLLM_TUNED_CONFIG_FOLDER=/data/mzw/vllm-hy3/moe_configs
 
@@ -68,16 +64,12 @@ ssh -o StrictHostKeyChecking=no "$NODE1_IP" \
       -e NCCL_PROTO=Simple \
       -e NCCL_ALGO=Ring \
       -e PYTHONUNBUFFERED=1 \
-      -e VLLM_ROCM_USE_AITER=1 \
-      -e VLLM_ROCM_USE_AITER_LINEAR=1 \
-      -e VLLM_ROCM_USE_AITER_MOE=1 \
-      -e VLLM_ROCM_USE_AITER_RMSNORM=1 \
-      -e VLLM_ROCM_USE_AITER_MHA=1 \
+      -e VLLM_ROCM_USE_AITER=0 \
       -e VLLM_HY3_DUMP_DIR=$DUMP_DIR \
       -e VLLM_HY3_DUMP_SKIP=2 \
       $DOCKER_NAME bash -c \"
         rm -f /tmp/node1_80l.log
-        python3 -u /data/mzw/vllm-hy3/run_api_server.py \
+        python3 -u -m vllm.entrypoints.openai.api_server \
           --model $MODEL_PATH \
           --pipeline-parallel-size 2 \
           --tensor-parallel-size 4 \
@@ -110,7 +102,7 @@ NODE0_LOG="$LOG_DIR/vllm_node0_pp2_80l_$(date +%m%d_%H%M).log"
 echo "  Node 0 log: $NODE0_LOG"
 
 # Use script -f for unbuffered output
-script -f -c "python3 -u /data/mzw/vllm-hy3/run_api_server.py \
+script -f -c "python3 -u -m vllm.entrypoints.openai.api_server \
   --model $MODEL_PATH \
   --pipeline-parallel-size 2 \
   --tensor-parallel-size 4 \

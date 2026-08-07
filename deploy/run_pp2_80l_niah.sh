@@ -70,7 +70,7 @@ ssh -o StrictHostKeyChecking=no "$NODE1_IP" \
       -e VLLM_ROCM_USE_AITER_MHA=1 \
       $DOCKER_NAME bash -c \"
         rm -f /tmp/node1_80l_niah.log
-        python3 -u /data/mzw/vllm-hy3/run_api_server.py \
+        python3 -u -m vllm.entrypoints.openai.api_server \
           --model $MODEL_PATH \
           --pipeline-parallel-size 2 \
           --tensor-parallel-size 4 \
@@ -98,7 +98,7 @@ echo "[$(date)] Launching Node 0 (PP rank 0, 10.18.17.71)..."
 NODE0_LOG="$LOG_DIR/vllm_node0_pp2_80l_niah_$(date +%m%d_%H%M).log"
 echo "  Node 0 log: $NODE0_LOG"
 
-script -f -c "python3 -u /data/mzw/vllm-hy3/run_api_server.py \
+script -f -c "python3 -u -m vllm.entrypoints.openai.api_server \
   --model $MODEL_PATH \
   --pipeline-parallel-size 2 \
   --tensor-parallel-size 4 \

@@ -1,33 +1,45 @@
-# Python cache
+# ── Generated / build ──
+dist/
+*.whl
+*.egg-info/
+
+# ── Python cache ──
 __pycache__/
 *.pyc
 *.pyo
 
-# Logs
+# ── Runtime artifacts ──
+logs/
+dumps/
 *.log
-/logs/
 
-# Dump outputs
-/dumps/
 
-# Large test model copies
-/test12/
-/test12bf16/
-/test16/
-/test40/
+# ── Backups and temp ──
+cleanup/
+*.bak
+*.tmp
 
-# Reference (MetaInfer golden dump, not our work)
-/reference/
+# ── Model test dirs ──
+test12/
+test12bf16/
+test16/
+test40/
+submodel_debug/
 
-# Documentation (exclude from git)
-/docs/
+# ── Reference (not our work) ──
+reference/
+upstream/
 
-# Configs (personal editor config)
-/configs/
+# ── Non-core dirs ──
+docs/
+web/
 
-# Web UI (not core)
-/web/
+# ── IDE / editor ──
+.idea/
+.vscode/
+*.swp
+*.swo
 
-# OS files
+# ── OS ──
 .DS_Store
 Thumbs.db
