@@ -31,19 +31,13 @@
 
 ### 2.2 软件栈（需预装）
 
-以下组件不在本仓库中，需由海光原厂提供或管理员预装：
+以下组件需由海光原厂提供或管理员在机器上预装。**仓库中的 `vllm/` 目录是上游源码快照（用于参考和 HY3 模型文件），不是可运行的包**，实际推理依赖的是系统安装的 DCU 定制版 vLLM：
 
 - **DTK 26.04** — 海光 DCU 工具链（含 HIP runtime、ROCm 兼容层）
 - **PyTorch 2.10.0+das.opt1.dtk2604** — 海光定制版 PyTorch
-- **vLLM 0.18.1+das.dtk2604** — 海光定制版 vLLM（wheel 位于 `dist/`）
+- **vLLM 0.18.1+das.dtk2604** — 海光定制版 vLLM（需用 wheel 包安装，本地 `dist/` 中有，但未纳入 git）
 - **AITER** — 海光 Composable Kernel (CK) 算子加速库
 - **RCCL** — ROCm 通信库（替代 NCCL）
-
-安装 wheel 包（如有提供）：
-
-```bash
-pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
-```
 
 ### 2.3 模型权重
 
