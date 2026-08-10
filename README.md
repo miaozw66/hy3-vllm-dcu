@@ -29,9 +29,9 @@
 - **单机部署**: 1 台 8 卡机器即可运行 TP=8 全量 80 层
 - **双机部署**: 2 台机器（PP=2），每台建议 ≥ 4 卡，机器间通过 PCIe/RoCE 互联
 
-### 2.2 软件栈（需预装）
+### 2.2 软件栈（DTK和PyTorch需预装,暂时只打包了vLLM）
 
-一个完整的海光 K100 环境需包含以下组件（通常由管理员预装）：
+一个完整的海光 K100 环境需包含以下组件：
 
 | 组件 | 说明 |
 |------|------|
@@ -39,7 +39,7 @@
 | **PyTorch 2.10.0+das** | 海光定制版 PyTorch |
 | **vLLM wheel** | 海光定制版 vLLM，包含 HY3 模型文件 + AITER CK 算子 + 全部修改 |
 
-安装 vLLM wheel：
+安装 vLLM wheel(本地实验的配置打包的)：
 
 ```bash
 pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
@@ -56,13 +56,13 @@ pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.m
 ### 3.1 克隆仓库
 
 ```bash
-git clone <repo-url> vllm-hy3
+git clone [<repo-url> vllm-hy3](https://github.com/miaozw66/hy3-vllm-dcu)
 cd vllm-hy3
 ```
 
 ### 3.2 配置机器信息
 
-编辑 **`deploy/env.sh`**，这是唯一需要修改的配置文件：
+编辑 **`deploy/env.sh`**，这是针对双机8卡的配置文件：
 
 ```bash
 vim deploy/env.sh
@@ -77,7 +77,6 @@ vim deploy/env.sh
 | `NIC` | 通信网卡名 | `eno1` |
 | `DOCKER_NAME` | Docker 容器名（裸金属留空） | `""` |
 | `MODEL_PATH` | 80 层完整模型路径 | `/data/models/hy3-int8` |
-| `SUBMODEL_PATH` | 4 层调试子模型路径 | `${PROJECT_ROOT}/submodel_debug/test4` |
 | `GPU_COUNT` | 每节点 GPU 数量 | `8` |
 
 ### 3.3 验证 RCCL 通信（单机）
