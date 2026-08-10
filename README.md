@@ -116,40 +116,10 @@ curl -s http://localhost:8000/v1/completions \
   -d '{"model":"hy3","prompt":"中国的首都是","max_tokens":5}'
 ```
 
-## 4. 启用 AITER CK 加速
-
-gfx928（K100）不被上游 vLLM 的 `_ON_GFX9` 列表识别，导致 AITER CK 加速 kernel 被静默禁用。
-使用 `patch_gfx928.py` 修复此问题：
-
-**方法 1: 在启动脚本最前面 import**
-
-```python
-import patch_gfx928  # noqa: F401  — 必须在所有 vllm import 之前
-```
-
-**方法 2: 通过 PYTHONSTARTUP 自动注入**
-
-```bash
-export PYTHONSTARTUP=/path/to/vllm-hy3/patch_gfx928.py
-```
-
-**AITER 环境变量参考：**
-
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `VLLM_ROCM_USE_AITER` | `0` | 总开关，设为 1 启用全部 CK 加速 |
-| `VLLM_ROCM_USE_AITER_LINEAR` | `1` | CK INT8 GEMM (Linear 层) |
-| `VLLM_ROCM_USE_AITER_MOE` | `1` | CK Fused MoE |
-| `VLLM_ROCM_USE_AITER_RMSNORM` | `1` | CK RMSNorm |
-| `VLLM_ROCM_USE_AITER_MHA` | `1` | CK Flash Attention |
-
-完整 AITER 选项见 `vllm/vllm/envs.py` 第 101-114 行。
-
-> **注意**: CK kernel 在 gfx928 上无预编译 `.co` 文件，首次运行会触发 JIT 编译，可能导致超时或崩溃。建议先用小 max-model-len 跑一次 warmup。
 
 ## 5. 部署场景
 
-### 5.1 单机 TP=8（8 卡，完整 80 层）
+### 5.1 单机 TP=8（8 卡，完整 80 层，可能有误，没在单机8卡启动过）
 
 ```bash
 python3 -m vllm.entrypoints.openai.api_server \
@@ -177,7 +147,7 @@ bash deploy/run_pp2_80l.sh
 - 在 Node 0 上启动 PP leader
 - 等待服务就绪并输出健康检查命令
 
-**NIAH 性能测试版（启用 AITER + 256K 上下文）：**
+**NIAH 性能测试版（256K 上下文）：**
 
 ```bash
 bash deploy/run_pp2_80l_niah.sh
@@ -262,13 +232,6 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 
 ## 9. 故障排查
 
-### AITER 未生效
-
-```bash
-python3 -c "import patch_gfx928; from vllm.platforms.rocm import on_gfx9; print('on_gfx9():', on_gfx9())"
-# 应输出: on_gfx9(): True
-```
-
 ### RCCL 初始化超时
 
 1. 确认网卡名正确：`ip addr show` 查看实际网卡名，更新 `env.sh` 中 `NIC`
@@ -298,11 +261,10 @@ python3 -c "import patch_gfx928; from vllm.platforms.rocm import on_gfx9; print(
 3. **克隆仓库**: `git clone <repo-url> && cd vllm-hy3`
 4. **编辑配置**: 修改 `deploy/env.sh` 中的 IP、NIC、路径、Docker 容器名
 5. **验证 RCCL**: `python3 tools/test_rccl_single.py`
-6. **验证 AITER**: `python3 -c "import patch_gfx928; from vllm.platforms.rocm import on_gfx9; assert on_gfx9()"`
-7. **准备子模型**（可选，用于快速验证）：提取 4 层子模型权重放到 `submodel_debug/test4/`
-8. **4 层快速测试**: `bash deploy/run_tp4_single_4l.sh`
-9. **80 层单机 TP=8**: 按 5.1 节命令启动
-10. **80 层双机 PP=2**（如需）: `bash deploy/run_pp2_80l.sh`
+6. **准备子模型**（可选，用于快速验证）：提取 4 层子模型权重放到 `submodel_debug/test4/`
+7. **4 层快速测试**: `bash deploy/run_tp4_single_4l.sh`
+8. **80 层单机 TP=8**: 按 5.1 节命令启动
+9. **80 层双机 PP=2**（如需）: `bash deploy/run_pp2_80l.sh`
 
 ### 配置模板
 
@@ -318,7 +280,6 @@ cp configs/opencode.json.template configs/opencode.json
 ```
 vllm-hy3/
 ├── README.md                     # 本文件
-├── patch_gfx928.py               # gfx928 AITER monkey-patch
 ├── deploy/
 │   ├── env.sh                    # ★ 集中式机器配置（移植时首先修改此文件）
 │   ├── run_pp2_80l.sh            # 双机 PP=2 启动（dump 模式）
@@ -360,9 +321,8 @@ vllm-hy3/
 
 ## 12. 已知问题与限制
 
-1. **gfx928 不在上游 `_ON_GFX9`**: 使用 `patch_gfx928.py` 修复
-2. **CK kernel 无预编译 .co**: gfx928 上首次运行会 JIT 编译，可能不稳定；建议先 warmup
-3. **NFS 权重加载慢**: 多线程加载 (`enable_multithread_load`) 可缓解
-4. **enforce-eager 禁用 CUDA Graph**: gfx928 上 HIP Graph 尚不稳定，暂时禁用
-5. **PP=2 需 monkey-patch**: follower 节点的 kv_cache_coordinator 修复在 `sitecustomize.py` 中
-6. **MoE 调优配置**: `configs/moe_configs/` 中的 device_name=KONGMING 仅匹配海光卡；换 GPU 需重新生成
+1. **AITER CK kernel 暂未启用**: gfx928 不在上游 `_ON_GFX9` 列表，且 CK kernel 在 gfx928 上无预编译 `.co` 文件，当前部署默认 `VLLM_ROCM_USE_AITER=0`
+2. **NFS 权重加载慢**: 多线程加载 (`enable_multithread_load`) 可缓解
+3. **enforce-eager 禁用 CUDA Graph**: gfx928 上 HIP Graph 尚不稳定，暂时禁用
+4. **PP=2 需 monkey-patch**: follower 节点的 kv_cache_coordinator 修复在 `reference/submodel_debug/sitecustomize.py` 中
+5. **MoE 调优配置**: `configs/moe_configs/` 中的 device_name=KONGMING 仅匹配海光卡；换 GPU 需重新生成
