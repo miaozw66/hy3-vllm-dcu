@@ -1,6 +1,4 @@
 # ── Generated / build ──
-dist/
-*.whl
 *.egg-info/
 
 # ── Python cache ──

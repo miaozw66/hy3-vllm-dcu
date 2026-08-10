@@ -39,7 +39,7 @@
 | **PyTorch 2.10.0+das** | 海光定制版 PyTorch |
 | **vLLM wheel** | 海光定制版 vLLM，包含 HY3 模型文件 + AITER CK 算子 + 全部修改 |
 
-安装 vLLM wheel（包已随仓库分发在 `dist/` 中，但 git 不追踪，需单独获取）：
+安装 vLLM wheel：
 
 ```bash
 pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
