@@ -1,0 +1,94 @@
+{
+    "name": "master@gpqa_diamond",
+    "dataset_name": "gpqa_diamond",
+    "dataset_pretty_name": "GPQA-Diamond",
+    "dataset_description": "\n## Overview\n\nGPQA (Graduate-Level Google-Proof Q&A) Diamond is a challenging benchmark of 198 multiple-choice questions written by domain experts in biology, physics, and chemistry. The questions are designed to be extremely difficult, requiring PhD-level expertise to answer correctly.\n\n## Task Description\n\n- **Task Type**: Expert-Level Multiple-Choice Q&A\n- **Input**: Graduate-level science question with 4 choices\n- **Output**: Single correct answer letter (A, B, C, or D)\n- **Domains**: Biology, Physics, Chemistry\n\n## Key Features\n\n- 198 questions written and validated by domain PhD experts\n- Questions are \"Google-proof\" - cannot be easily looked up\n- Designed to test deep domain knowledge and reasoning\n- Diamond subset represents the highest quality questions\n- Average human expert accuracy ~65%, non-expert ~34%\n\n## Evaluation Notes\n\n- Default configuration uses **0-shot** or **5-shot** evaluation\n- Supports Chain-of-Thought (CoT) prompting for improved reasoning\n- Answer choices are randomly shuffled during evaluation\n- Only uses train split (validation set is private)\n- Challenging benchmark for measuring expert-level reasoning\n",
+    "model_name": "master",
+    "score": 0.7727,
+    "metrics": [
+        {
+            "name": "mean_acc",
+            "num": 198,
+            "score": 0.7727,
+            "macro_score": 0.7727,
+            "categories": [
+                {
+                    "name": [
+                        "default"
+                    ],
+                    "num": 198,
+                    "score": 0.7727,
+                    "macro_score": 0.7727,
+                    "subsets": [
+                        {
+                            "name": "default",
+                            "score": 0.7727,
+                            "num": 198,
+                            "is_aggregate": false
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "analysis": "N/A",
+    "perf_metrics": {
+        "summary": {
+            "n_samples": 198,
+            "latency": {
+                "mean": 408.097723,
+                "std": 416.160452,
+                "min": 69.07885,
+                "25%": 161.706775,
+                "50%": 249.46573,
+                "75%": 532.525566,
+                "90%": 919.26912,
+                "99%": 2090.644577,
+                "max": 2679.971478
+            },
+            "throughput": {
+                "avg_output_tps": 2.56,
+                "avg_req_ps": 0.0025
+            },
+            "usage": {
+                "input_tokens": {
+                    "mean": 265.762626,
+                    "std": 208.439742,
+                    "min": 105.0,
+                    "25%": 183.75,
+                    "50%": 232.5,
+                    "75%": 294.75,
+                    "90%": 379.0,
+                    "99%": 751.38,
+                    "max": 2789.0
+                },
+                "output_tokens": {
+                    "mean": 1045.737374,
+                    "std": 1073.105708,
+                    "min": 170.0,
+                    "25%": 408.75,
+                    "50%": 623.0,
+                    "75%": 1346.25,
+                    "90%": 2349.3,
+                    "99%": 5413.74,
+                    "max": 6870.0
+                },
+                "total_tokens": {
+                    "mean": 1311.5,
+                    "std": 1172.655002,
+                    "min": 311.0,
+                    "25%": 634.5,
+                    "50%": 879.5,
+                    "75%": 1566.5,
+                    "90%": 2650.7,
+                    "99%": 5846.2,
+                    "max": 9659.0
+                },
+                "total_input_tokens": 52621,
+                "total_output_tokens": 207056,
+                "total_tokens_count": 259677
+            }
+        }
+    },
+    "num": 198
+}

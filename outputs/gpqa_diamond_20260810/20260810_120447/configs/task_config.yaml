@@ -1,0 +1,147 @@
+agent_config: null
+analysis_report: false
+api_key: '**********'
+api_url: http://localhost:8000/v1/chat/completions
+chat_template: null
+collect_perf: true
+dataset_args:
+  gpqa_diamond:
+    aggregation: mean
+    data_statistics: null
+    dataset_id: AI-ModelScope/gpqa_diamond
+    default_subset: default
+    description: '
+
+      ## Overview
+
+
+      GPQA (Graduate-Level Google-Proof Q&A) Diamond is a challenging benchmark of
+      198 multiple-choice questions written by domain experts in biology, physics,
+      and chemistry. The questions are designed to be extremely difficult, requiring
+      PhD-level expertise to answer correctly.
+
+
+      ## Task Description
+
+
+      - **Task Type**: Expert-Level Multiple-Choice Q&A
+
+      - **Input**: Graduate-level science question with 4 choices
+
+      - **Output**: Single correct answer letter (A, B, C, or D)
+
+      - **Domains**: Biology, Physics, Chemistry
+
+
+      ## Key Features
+
+
+      - 198 questions written and validated by domain PhD experts
+
+      - Questions are "Google-proof" - cannot be easily looked up
+
+      - Designed to test deep domain knowledge and reasoning
+
+      - Diamond subset represents the highest quality questions
+
+      - Average human expert accuracy ~65%, non-expert ~34%
+
+
+      ## Evaluation Notes
+
+
+      - Default configuration uses **0-shot** or **5-shot** evaluation
+
+      - Supports Chain-of-Thought (CoT) prompting for improved reasoning
+
+      - Answer choices are randomly shuffled during evaluation
+
+      - Only uses train split (validation set is private)
+
+      - Challenging benchmark for measuring expert-level reasoning
+
+      '
+    eval_split: train
+    extra_params: {}
+    few_shot_num: 0
+    few_shot_prompt_template: null
+    few_shot_random: false
+    filters: null
+    force_redownload: false
+    max_image_bytes: null
+    metric_list:
+    - acc
+    name: gpqa_diamond
+    output_types:
+    - generation
+    paper_url: null
+    pretty_name: GPQA-Diamond
+    prompt_template: 'Answer the following multiple choice question. The last line
+      of your response should be of the following format: ''ANSWER: [LETTER]'' (without
+      quotes) where [LETTER] is one of {letters}. Think step by step before answering.
+
+
+      {question}
+
+
+      {choices}'
+    query_template: null
+    review_timeout: null
+    sample_example: null
+    sandbox_config: {}
+    shuffle: false
+    shuffle_choices: false
+    subset_list:
+    - default
+    system_prompt: null
+    tags:
+    - Knowledge
+    - MCQ
+    train_split: null
+dataset_dir: /root/.cache/modelscope/hub/datasets
+dataset_hub: modelscope
+datasets:
+- gpqa_diamond
+debug: false
+enable_progress_tracker: false
+eval_backend: Native
+eval_batch_size: 16
+eval_config: null
+eval_type: openai_api
+evalscope_version: 1.10.0
+generation_config:
+  MinP: 0
+  batch_size: 16
+  chat_template_kwargs:
+    reasoning_effort: no_think
+  max_tokens: 20000
+  temperature: 0.0
+  timeout: 100000.0
+  top_k: 20
+  top_p: 0.95
+ignore_errors: false
+judge_model_args: {}
+judge_strategy: auto
+judge_worker_num: 1
+limit: 8
+model: /data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master
+model_args: {}
+model_id: master
+model_task: text_generation
+no_timestamp: false
+repeats: 1
+rerun_review: false
+sandbox:
+  default_config: {}
+  enabled: false
+  engine: docker
+  manager_config: {}
+  pool_size: null
+sandbox_manager_config: {}
+sandbox_type: docker
+seed: 42
+stream: null
+timeout: 100000.0
+use_cache: null
+use_sandbox: false
+work_dir: /data/mzw/vllm-hy3/outputs/gpqa_bench/20260810_120447

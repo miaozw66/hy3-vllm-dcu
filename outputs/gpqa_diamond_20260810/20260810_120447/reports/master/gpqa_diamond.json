@@ -1,0 +1,94 @@
+{
+    "name": "master@gpqa_diamond",
+    "dataset_name": "gpqa_diamond",
+    "dataset_pretty_name": "GPQA-Diamond",
+    "dataset_description": "\n## Overview\n\nGPQA (Graduate-Level Google-Proof Q&A) Diamond is a challenging benchmark of 198 multiple-choice questions written by domain experts in biology, physics, and chemistry. The questions are designed to be extremely difficult, requiring PhD-level expertise to answer correctly.\n\n## Task Description\n\n- **Task Type**: Expert-Level Multiple-Choice Q&A\n- **Input**: Graduate-level science question with 4 choices\n- **Output**: Single correct answer letter (A, B, C, or D)\n- **Domains**: Biology, Physics, Chemistry\n\n## Key Features\n\n- 198 questions written and validated by domain PhD experts\n- Questions are \"Google-proof\" - cannot be easily looked up\n- Designed to test deep domain knowledge and reasoning\n- Diamond subset represents the highest quality questions\n- Average human expert accuracy ~65%, non-expert ~34%\n\n## Evaluation Notes\n\n- Default configuration uses **0-shot** or **5-shot** evaluation\n- Supports Chain-of-Thought (CoT) prompting for improved reasoning\n- Answer choices are randomly shuffled during evaluation\n- Only uses train split (validation set is private)\n- Challenging benchmark for measuring expert-level reasoning\n",
+    "model_name": "master",
+    "score": 0.875,
+    "metrics": [
+        {
+            "name": "mean_acc",
+            "num": 8,
+            "score": 0.875,
+            "macro_score": 0.875,
+            "categories": [
+                {
+                    "name": [
+                        "default"
+                    ],
+                    "num": 8,
+                    "score": 0.875,
+                    "macro_score": 0.875,
+                    "subsets": [
+                        {
+                            "name": "default",
+                            "score": 0.875,
+                            "num": 8,
+                            "is_aggregate": false
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "analysis": "N/A",
+    "perf_metrics": {
+        "summary": {
+            "n_samples": 8,
+            "latency": {
+                "mean": 191.888482,
+                "std": 46.957389,
+                "min": 124.570967,
+                "25%": 164.554859,
+                "50%": 184.687261,
+                "75%": 221.03473,
+                "90%": 242.084066,
+                "99%": 269.417093,
+                "max": 272.454096
+            },
+            "throughput": {
+                "avg_output_tps": 2.55,
+                "avg_req_ps": 0.0052
+            },
+            "usage": {
+                "input_tokens": {
+                    "mean": 241.875,
+                    "std": 118.824525,
+                    "min": 155.0,
+                    "25%": 169.25,
+                    "50%": 187.0,
+                    "75%": 255.25,
+                    "90%": 408.1,
+                    "99%": 469.21,
+                    "max": 476.0
+                },
+                "output_tokens": {
+                    "mean": 490.25,
+                    "std": 123.083885,
+                    "min": 316.0,
+                    "25%": 417.75,
+                    "50%": 471.0,
+                    "75%": 566.0,
+                    "90%": 621.8,
+                    "99%": 694.88,
+                    "max": 703.0
+                },
+                "total_tokens": {
+                    "mean": 732.125,
+                    "std": 218.404237,
+                    "min": 471.0,
+                    "25%": 605.75,
+                    "50%": 668.0,
+                    "75%": 824.25,
+                    "90%": 1049.1,
+                    "99%": 1078.71,
+                    "max": 1082.0
+                },
+                "total_input_tokens": 1935,
+                "total_output_tokens": 3922,
+                "total_tokens_count": 5857
+            }
+        }
+    },
+    "num": 8
+}

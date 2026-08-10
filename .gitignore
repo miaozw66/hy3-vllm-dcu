@@ -10,7 +10,6 @@ __pycache__/
 logs/
 dumps/
 *.log
-outputs/
 
 # ── Backups and temp ──
 cleanup/
@@ -36,6 +35,10 @@ reference/golden_dump_int8/
 
 # ── Per-user config (template is tracked) ──
 configs/opencode.json
+
+# ── Project docs (local only) ──
+docs/
+verify/
 
 # ── Web UI artifacts ──
 web/

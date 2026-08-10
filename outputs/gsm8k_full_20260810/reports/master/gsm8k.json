@@ -1,0 +1,94 @@
+{
+    "name": "master@gsm8k",
+    "dataset_name": "gsm8k",
+    "dataset_pretty_name": "GSM8K",
+    "dataset_description": "\n## Overview\n\nGSM8K (Grade School Math 8K) is a high-quality dataset of 8.5K linguistically diverse grade school math word problems created by human problem writers. The dataset is specifically designed to evaluate and improve the multi-step mathematical reasoning capabilities of language models.\n\n## Task Description\n\n- **Task Type**: Mathematical Word Problem Solving\n- **Input**: Natural language math word problem\n- **Output**: Numerical answer derived through step-by-step reasoning\n- **Difficulty**: Grade school level (2-8 reasoning steps required)\n\n## Key Features\n\n- Problems require basic arithmetic operations (addition, subtraction, multiplication, division)\n- Solutions involve 2 to 8 sequential reasoning steps\n- High linguistic diversity in problem formulations\n- Human-written problems ensuring natural language quality\n- Clear numerical answers for objective evaluation\n\n## Evaluation Notes\n\n- Default configuration uses **4-shot** examples with Chain-of-Thought (CoT) prompting\n- Answers should be formatted within `\\boxed{}` for proper extraction\n- The metric extracts numerical values for accuracy comparison\n- Supports both zero-shot and few-shot evaluation modes\n",
+    "model_name": "master",
+    "score": 0.956,
+    "metrics": [
+        {
+            "name": "mean_acc",
+            "num": 1319,
+            "score": 0.956,
+            "macro_score": 0.956,
+            "categories": [
+                {
+                    "name": [
+                        "default"
+                    ],
+                    "num": 1319,
+                    "score": 0.956,
+                    "macro_score": 0.956,
+                    "subsets": [
+                        {
+                            "name": "main",
+                            "score": 0.956,
+                            "num": 1319,
+                            "is_aggregate": false
+                        }
+                    ]
+                }
+            ]
+        }
+    ],
+    "analysis": "N/A",
+    "perf_metrics": {
+        "summary": {
+            "n_samples": 1319,
+            "latency": {
+                "mean": 54.254432,
+                "std": 16.898918,
+                "min": 21.462953,
+                "25%": 41.614,
+                "50%": 51.233037,
+                "75%": 64.558508,
+                "90%": 78.078543,
+                "99%": 99.719212,
+                "max": 105.674133
+            },
+            "throughput": {
+                "avg_output_tps": 2.52,
+                "avg_req_ps": 0.0184
+            },
+            "usage": {
+                "input_tokens": {
+                    "mean": 594.286581,
+                    "std": 21.929423,
+                    "min": 557.0,
+                    "25%": 578.0,
+                    "50%": 591.0,
+                    "75%": 605.0,
+                    "90%": 624.0,
+                    "99%": 660.64,
+                    "max": 720.0
+                },
+                "output_tokens": {
+                    "mean": 136.903715,
+                    "std": 43.043744,
+                    "min": 54.0,
+                    "25%": 104.0,
+                    "50%": 129.0,
+                    "75%": 163.0,
+                    "90%": 197.0,
+                    "99%": 256.0,
+                    "max": 256.0
+                },
+                "total_tokens": {
+                    "mean": 731.190296,
+                    "std": 58.133469,
+                    "min": 622.0,
+                    "25%": 688.0,
+                    "50%": 722.0,
+                    "75%": 765.0,
+                    "90%": 816.0,
+                    "99%": 889.92,
+                    "max": 938.0
+                },
+                "total_input_tokens": 783864,
+                "total_output_tokens": 180576,
+                "total_tokens_count": 964440
+            }
+        }
+    },
+    "num": 1319
+}
