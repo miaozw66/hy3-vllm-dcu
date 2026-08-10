@@ -182,29 +182,9 @@ export PYTHONPATH=/path/to/vllm-hy3/reference/submodel_debug:$PYTHONPATH
 
 此文件已在 `.gitignore` 中取消忽略，clone 后会包含。
 
-## 7. 调试与 Dump
+## 7. 性能测试
 
-### 7.1 启用逐层 Dump
-
-设置环境变量后，每层 7 个关键位置（input、attention、MLP 等）的 tensor 会被保存：
-
-```bash
-export VLLM_HY3_DUMP_DIR=/tmp/dumps
-export VLLM_HY3_DUMP_SKIP=2  # 跳过前 2 次 forward（warmup）
-```
-
-### 7.2 与 MetaInfer Golden Dump 对比验证
-
-```bash
-# 对比 PP=2 全量 80 层的 dump 与 golden 参考数据
-VLLM_DUMP_DIR=/path/to/vllm/dumps \
-VLLM_GOLDEN_DUMP_DIR=/path/to/golden/dumps \
-python3 verify/compare_80l_full.py
-```
-
-## 8. 性能测试
-
-### 8.1 GPU 监控
+### 7.1 GPU 监控
 
 ```bash
 # 监控 600 秒，每 10 秒采样
@@ -216,13 +196,13 @@ MONITOR_NODES='[{"host":"192.168.1.100","type":"local","docker":""},
 python3 tools/monitor_gpu.py 600 10
 ```
 
-### 8.2 NIAH (Needle in a Haystack) 测试
+### 7.2 NIAH (Needle in a Haystack) 测试
 
 ```bash
 python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8192,16384,32768,65536,131072,262144
 ```
 
-## 9. 故障排查
+## 8. 故障排查
 
 ### RCCL 初始化超时
 
@@ -244,7 +224,7 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 
 确认已设置 `PYTHONPATH` 包含 `reference/submodel_debug/sitecustomize.py`（参见 6.3 节）。
 
-## 10. 移植到新机器 — 步骤清单
+## 9. 移植到新机器 — 步骤清单
 
 将本项目移植到另一台海光 K100 DCU 机器的完整步骤：
 
@@ -265,7 +245,7 @@ cp configs/opencode.json.template configs/opencode.json
 # 编辑 configs/opencode.json，将 <MODEL_PATH> 替换为实际路径
 ```
 
-## 11. 项目文件结构
+## 10. 项目文件结构
 
 ```
 vllm-hy3/
@@ -289,22 +269,13 @@ vllm-hy3/
 │   ├── test_rccl_direct.py       # 双机 RCCL 测试（mp.spawn 方式）
 │   ├── monitor_gpu.py            # GPU 利用率监控
 │   └── summarize_doc.py          # 文档总结测试脚本
-├── verify/
-│   ├── verify.py                 # 逐层对比验证（TP=4）
-│   ├── verify_layers_65_79.py    # 层 65-79 手动验证
-│   ├── compare_80l_full.py       # 80 层全量对比报告
-│   ├── compare_pp_boundary.py    # PP=2 边界 tensor 对比
-│   ├── generate_final_report.py  # 合并验证报告
-│   ├── output_final_logits.py    # 输出最终 logits
-│   ├── auto_verify.sh            # 自动等待服务就绪并验证
-│   └── test_and_compare.sh       # 测试请求 + 对比
 ├── benchmark/
 │   └── niah_test.py              # NIAH 性能测试
 ├── vllm/                         # vLLM 0.18.1 源码 snapshot + HY3 模型文件
 └── docs/                         # 移植过程文档（移植记录、调优指南等）
 ```
 
-## 12. 已知问题与限制
+## 11. 已知问题与限制
 
 1. **AITER CK kernel 暂未启用**: gfx928 不在上游 `_ON_GFX9` 列表，且 CK kernel 在 gfx928 上无预编译 `.co` 文件，当前部署默认 `VLLM_ROCM_USE_AITER=0`
 2. **NFS 权重加载慢**: 多线程加载 (`enable_multithread_load`) 可缓解
