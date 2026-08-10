@@ -256,7 +256,7 @@ vllm-hy3/
 ├── benchmark/
 │   ├── niah_test.py              # NIAH 性能测试
 │   └── niah_results_*.json       # NIAH 历史测试结果
-├── outputs/                      # Benchmark 运行结果
+├── outputs/                      # evalscope 运行结果
 ├── dist/                         # vLLM wheel 安装包
 ├── upstream/                     # HY3 上游 vLLM 集成改动
 └── vllm/                         # vLLM 0.18.1 源码 snapshot（含 HY3 模型文件 + 上游文档）
