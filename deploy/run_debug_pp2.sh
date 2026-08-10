@@ -12,12 +12,8 @@ MAX_MODEL_LEN=${1:-8192}
 
 export NCCL_SOCKET_IFNAME=$NIC
 export NCCL_DEBUG=WARN
-# AITER: Enable Composable Kernel acceleration for Hygon DCU
-export VLLM_ROCM_USE_AITER=1
-export VLLM_ROCM_USE_AITER_LINEAR=1
-export VLLM_ROCM_USE_AITER_MOE=1
-export VLLM_ROCM_USE_AITER_RMSNORM=1
-export VLLM_ROCM_USE_AITER_MHA=1
+# AITER: Disabled — CK kernels not compiled for gfx928
+export VLLM_ROCM_USE_AITER=0
 
 MASTER_PORT=29561
 
@@ -49,7 +45,7 @@ ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$NODE1_IP" \
 sleep 1
 
 _remote_exec "$NODE1_IP" \
-    "-e NCCL_SOCKET_IFNAME=$NIC -e NCCL_DEBUG=WARN -e NCCL_IB_DISABLE=1 -e HSA_FORCE_FINE_GRAIN_PCIE=1 -e PYTHONUNBUFFERED=1 -e VLLM_ROCM_USE_AITER=1 -e VLLM_ROCM_USE_AITER_LINEAR=1 -e VLLM_ROCM_USE_AITER_MOE=1 -e VLLM_ROCM_USE_AITER_RMSNORM=1 -e VLLM_ROCM_USE_AITER_MHA=1" \
+    "-e NCCL_SOCKET_IFNAME=$NIC -e NCCL_DEBUG=WARN -e NCCL_IB_DISABLE=1 -e HSA_FORCE_FINE_GRAIN_PCIE=1 -e PYTHONUNBUFFERED=1 -e VLLM_ROCM_USE_AITER=0" \
     "rm -f /tmp/node1_debug.log
      python3 -u -m vllm.entrypoints.openai.api_server \
        --model $MODEL_PATH \

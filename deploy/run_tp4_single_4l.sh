@@ -13,9 +13,6 @@ export NCCL_DEBUG=WARN
 
 LOG=/tmp/vllm_single_tp4_4l_v2.log
 rm -f "$LOG"
-rm -rf "$DUMP_DIR/single_tp4_4l" 2>/dev/null || true
-mkdir -p "$DUMP_DIR/single_tp4_4l"
-
 echo "Starting single TP=4 4-layer server at $(date)"
 echo "Log: $LOG"
 

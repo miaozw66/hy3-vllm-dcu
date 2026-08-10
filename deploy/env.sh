@@ -29,7 +29,7 @@ DOCKER_NAME=mmh_qwen_opt
 # 完整 80 层 INT8 模型 (NFS 或本地路径)
 MODEL_PATH=/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master
 # 4 层调试子模型 (用于快速验证)
-SUBMODEL_PATH=${PROJECT_ROOT}/submodel_debug/test4
+SUBMODEL_PATH=${PROJECT_ROOT}/reference/submodel_debug/test4
 
 # ============================================================
 # MoE 调优配置目录 (MoE tuning config)

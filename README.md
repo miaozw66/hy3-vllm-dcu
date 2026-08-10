@@ -37,7 +37,7 @@
 |------|------|
 | **DTK 26.04** | 海光 DCU 工具链（含 HIP runtime、ROCm 兼容层、RCCL 通信库） |
 | **PyTorch 2.10.0+das** | 海光定制版 PyTorch |
-| **vLLM wheel** | 海光定制版 vLLM，包含 HY3 模型文件 + AITER CK 算子 + 全部修改 |
+| **vLLM wheel** | 海光定制版 vLLM，包含 HY3 模型文件及全部修改 |
 
 安装 vLLM wheel(本地实验的配置打包的)：
 
@@ -165,22 +165,11 @@ bash deploy/run_debug_pp2.sh 131072  # 大上下文
 
 ```bash
 # 在 Node 0 上:
-RCCL_MASTER_ADDR=<主节点IP> bash tools/test_rccl_multinode.sh 0
+RCCL_MASTER_ADDR=<主节点IP> python3 tools/test_rccl_multinode.py
 
 # 在 Node 1 上:
-RCCL_MASTER_ADDR=<主节点IP> bash tools/test_rccl_multinode.sh 1
+RCCL_MASTER_ADDR=<主节点IP> python3 tools/test_rccl_multinode.py
 ```
-
-### 6.3 PP=2 需额外安装的修复
-
-双机 PP=2 时，PP follower 节点的 `kv_cache_coordinator` 可能为空导致崩溃。
-需要使用 `reference/submodel_debug/sitecustomize.py` 中的 monkey-patch：
-
-```bash
-export PYTHONPATH=/path/to/vllm-hy3/reference/submodel_debug:$PYTHONPATH
-```
-
-此文件已在 `.gitignore` 中取消忽略，clone 后会包含。
 
 ## 7. 性能测试
 
@@ -220,10 +209,6 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 
 添加 `--model-loader-extra-config '{"enable_multithread_load": true}'` 启用多线程加载（适用于 NFS）。
 
-### PP=2 follower 节点崩溃
-
-确认已设置 `PYTHONPATH` 包含 `reference/submodel_debug/sitecustomize.py`（参见 6.3 节）。
-
 ## 9. 移植到新机器 — 步骤清单
 
 将本项目移植到另一台海光 K100 DCU 机器的完整步骤：
@@ -262,7 +247,7 @@ vllm-hy3/
 │   ├── opencode.json.template    # OpenCode 配置模板
 │   └── moe_configs/              # MoE kernel 调优参数
 │       └── E=192,N=384,device_name=KONGMING.json
-├── reference/                    # 调试工具和参考数据
+├── reference/                    # 参考数据和调试工具
 ├── tools/
 │   ├── test_rccl_single.py       # 单机 RCCL 测试
 │   ├── test_rccl_multinode.py    # 双机 RCCL 测试
@@ -280,5 +265,4 @@ vllm-hy3/
 1. **AITER CK kernel 暂未启用**: gfx928 不在上游 `_ON_GFX9` 列表，且 CK kernel 在 gfx928 上无预编译 `.co` 文件，当前部署默认 `VLLM_ROCM_USE_AITER=0`
 2. **NFS 权重加载慢**: 多线程加载 (`enable_multithread_load`) 可缓解
 3. **enforce-eager 禁用 CUDA Graph**: gfx928 上 HIP Graph 尚不稳定，暂时禁用
-4. **PP=2 需 monkey-patch**: follower 节点的 kv_cache_coordinator 修复在 `reference/submodel_debug/sitecustomize.py` 中
-5. **MoE 调优配置**: `configs/moe_configs/` 中的 device_name=KONGMING 仅匹配海光卡；换 GPU 需重新生成
+4. **MoE 调优配置**: `configs/moe_configs/` 中的 device_name=KONGMING 仅匹配海光卡；换 GPU 需重新生成

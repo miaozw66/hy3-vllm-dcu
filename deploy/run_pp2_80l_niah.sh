@@ -17,12 +17,8 @@ source "$(dirname "$0")/env.sh"
 # ── Environment ────────────────────────────────────────────
 export NCCL_SOCKET_IFNAME=$NIC
 export NCCL_DEBUG=WARN
-# AITER: Enable Composable Kernel acceleration for Hygon DCU
-export VLLM_ROCM_USE_AITER=1
-export VLLM_ROCM_USE_AITER_LINEAR=1
-export VLLM_ROCM_USE_AITER_MOE=1
-export VLLM_ROCM_USE_AITER_RMSNORM=1
-export VLLM_ROCM_USE_AITER_MHA=1
+# AITER: Disabled — CK kernels not compiled for gfx928
+export VLLM_ROCM_USE_AITER=0
 # MoE tuning config
 export VLLM_TUNED_CONFIG_FOLDER=$MOE_CONFIG_DIR
 
@@ -58,7 +54,7 @@ ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$NODE1_IP" \
     "if [ -n \"$DOCKER_NAME\" ]; then docker exec $DOCKER_NAME bash -c 'pkill -9 -f vllm.entrypoints 2>/dev/null || true; pkill -9 -f VLLM:: 2>/dev/null || true'; else pkill -9 -f vllm.entrypoints 2>/dev/null || true; pkill -9 -f VLLM:: 2>/dev/null || true; fi; sleep 2; echo cleaned" 2>/dev/null || true
 
 _remote_exec "$NODE1_IP" \
-    "-e NCCL_SOCKET_IFNAME=$NIC -e NCCL_DEBUG=WARN -e NCCL_IB_DISABLE=1 -e HSA_FORCE_FINE_GRAIN_PCIE=1 -e RCCL_BUFFSIZE=$RCCL_BUFFSIZE -e NCCL_MIN_NCHANNELS=$NCCL_MIN_NCHANNELS -e NCCL_PROTO=$NCCL_PROTO -e NCCL_ALGO=$NCCL_ALGO -e PYTHONUNBUFFERED=1 -e VLLM_ROCM_USE_AITER=1 -e VLLM_ROCM_USE_AITER_LINEAR=1 -e VLLM_ROCM_USE_AITER_MOE=1 -e VLLM_ROCM_USE_AITER_RMSNORM=1 -e VLLM_ROCM_USE_AITER_MHA=1" \
+    "-e NCCL_SOCKET_IFNAME=$NIC -e NCCL_DEBUG=WARN -e NCCL_IB_DISABLE=1 -e HSA_FORCE_FINE_GRAIN_PCIE=1 -e RCCL_BUFFSIZE=$RCCL_BUFFSIZE -e NCCL_MIN_NCHANNELS=$NCCL_MIN_NCHANNELS -e NCCL_PROTO=$NCCL_PROTO -e NCCL_ALGO=$NCCL_ALGO -e PYTHONUNBUFFERED=1 -e VLLM_ROCM_USE_AITER=0" \
     "rm -f /tmp/node1_80l_niah.log
      python3 -u -m vllm.entrypoints.openai.api_server \
        --model $MODEL_PATH \
