@@ -2,40 +2,40 @@
 
 在海光 K100 (gfx928) 平台上启动 HY3 模型的 vLLM 推理服务，支持单机 TP=8 和双机 PP=2。
 
-# 1. 环境和模型准备
+# 1. 环境准备
+
+确保机器已安装以下软件栈：
+
+| 组件 | 说明 |
+|------|------|
+| DTK 26.04 | 海光 DCU 工具链（HIP runtime、ROCm 兼容层、RCCL） |
+| PyTorch 2.10.0+das | 海光定制版 PyTorch |
+| aiter / flash-attn / lightop / lmslim | 海光算子库（ROCm CK / FlashAttention / 融合算子） |
+
+以上组件需由海光方面预装。确认安装成功后，继续以下步骤。
+
+## 1.1 安装 vLLM wheel
 
 ```Bash
-# 基础镜像（DTK 26.04 + PyTorch 2.10.0+das）
-export IMAGE=harbor.sourcefind.cn:5443/dcu/admin/base/custom:vllm0.18.1-ubuntu22.04-dtk26.04-py3.10-20260617
-
-docker run -itd \
-    --name hy3_vllm \
-    --shm-size=200g \
-    --privileged \
-    --network=host \
-    --ipc=host \
-    --device=/dev/kfd \
-    --device=/dev/mkfd \
-    --device=/dev/dri \
-    --group-add video \
-    --cap-add=SYS_PTRACE \
-    --security-opt seccomp=unconfined \
-    -u root \
-    -v /opt/hyhal:/opt/hyhal:ro \
-    -v /data/model:/model:ro \
-    $IMAGE \
-    /bin/bash
+pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
 ```
 
-进入容器后，下载模型并安装 vLLM wheel：
+该 wheel 包含 HY3 模型文件和全部 vLLM 修改，安装后 `vllm` 包即可使用。
+
+## 1.2 下载模型权重
 
 ```Bash
-# 下载 HY3 Channel-INT8-w8a8 模型（~280GB，99 个分片）
 pip install modelscope
 modelscope download --model hygon/Hy3-Channel-INT8-w8a8 --local_dir /data/model/Hy3-Channel-INT8-w8a8
+```
 
-# 安装 vLLM wheel（含 HY3 模型文件及全部修改）
-pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+> 模型 ~280GB（99 个 safetensors 分片），双机部署需放在两台机器都能访问的路径（NFS 或各自存放）。
+
+## 1.3 克隆仓库
+
+```Bash
+git clone https://github.com/miaozw66/hy3-vllm-dcu
+cd vllm-hy3
 ```
 
 # 2. 配置机器信息
@@ -61,7 +61,7 @@ export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
 
 # ── RCCL 通信 ──────────────────────────────────────────
 export NCCL_SOCKET_IFNAME=eno1          # 网卡名，按实际情况修改
-export NCCL_IB_DISABLE=1                # K100 不用 InfiniBand
+export NCCL_IB_DISABLE=1                # K100 不走 InfiniBand
 export HSA_FORCE_FINE_GRAIN_PCIE=1
 export RCCL_BUFFSIZE=8388608
 export NCCL_MIN_NCHANNELS=4
@@ -164,3 +164,4 @@ curl -s http://localhost:8000/v1/chat/completions \
 | OOM | 降 `--gpu-memory-utilization` 或 `--max-model-len` |
 | 模型加载慢（NFS） | 加 `--model-loader-extra-config '{"enable_multithread_load":true}'` |
 | PP=2 Node 1 连不上 | 确认免密 SSH、模型路径一致、Docker 容器名正确 |
+| `import vllm` 报错 | 确认 DTK 26.04 和 PyTorch 2.10.0+das 已安装 |
