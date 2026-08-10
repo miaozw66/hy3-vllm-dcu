@@ -215,7 +215,7 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 
 1. **确认硬件**: 8 × K100 AI (gfx928), 单卡 64 GiB
 2. **确认软件栈**: DTK 26.04, PyTorch 2.10.0+das, vLLM 0.18.1+das 已安装
-3. **克隆仓库**: `git clone <repo-url> && cd vllm-hy3`
+3. **克隆仓库**: `git clone https://github.com/miaozw66/hy3-vllm-dcu && cd vllm-hy3`
 4. **编辑配置**: 修改 `deploy/env.sh` 中的 IP、NIC、路径、Docker 容器名
 5. **验证 RCCL**: `python3 tools/test_rccl_single.py`
 6. **80 层单机 TP=8**: 按 4.1 节命令启动
@@ -247,18 +247,19 @@ vllm-hy3/
 ├── configs/
 │   ├── opencode.json.template    # OpenCode 配置模板
 │   └── moe_configs/              # MoE kernel 调优参数
-│       └── E=192,N=384,device_name=KONGMING.json
-├── reference/                    # 参考数据和调试工具
 ├── tools/
 │   ├── test_rccl_single.py       # 单机 RCCL 测试
-│   ├── test_rccl_multinode.py    # 双机 RCCL 测试
-│   ├── test_rccl_direct.py       # 双机 RCCL 测试（mp.spawn 方式）
+│   ├── test_rccl_multinode.py    # 双机 RCCL 测试（torchrun）
+│   ├── test_rccl_direct.py       # 双机 RCCL 测试（mp.spawn）
 │   ├── monitor_gpu.py            # GPU 利用率监控
 │   └── summarize_doc.py          # 文档总结测试脚本
 ├── benchmark/
-│   └── niah_test.py              # NIAH 性能测试
-├── vllm/                         # vLLM 0.18.1 源码 snapshot + HY3 模型文件
-└── docs/                         # 移植过程文档（移植记录、调优指南等）
+│   ├── niah_test.py              # NIAH 性能测试
+│   └── niah_results_*.json       # NIAH 历史测试结果
+├── outputs/                      # Benchmark 运行结果
+├── dist/                         # vLLM wheel 安装包
+├── upstream/                     # HY3 上游 vLLM 集成改动
+└── vllm/                         # vLLM 0.18.1 源码 snapshot（含 HY3 模型文件 + 上游文档）
 ```
 
 ## 10. 已知问题与限制
