@@ -89,8 +89,6 @@ python3 tools/test_rccl_single.py
 
 ### 3.4 启动推理服务
 
-#### 单机 TP=8（推荐 8 卡配置）
-
 ```bash
 python3 -m vllm.entrypoints.openai.api_server \
   --model /path/to/hy3-model \
@@ -100,12 +98,6 @@ python3 -m vllm.entrypoints.openai.api_server \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.85 \
   --port 8000
-```
-
-#### 单机 TP=4（4 层子模型快速验证）
-
-```bash
-bash deploy/run_tp4_single_4l.sh
 ```
 
 ### 3.5 测试推理
@@ -261,10 +253,8 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 3. **克隆仓库**: `git clone <repo-url> && cd vllm-hy3`
 4. **编辑配置**: 修改 `deploy/env.sh` 中的 IP、NIC、路径、Docker 容器名
 5. **验证 RCCL**: `python3 tools/test_rccl_single.py`
-6. **准备子模型**（可选，用于快速验证）：提取 4 层子模型权重放到 `submodel_debug/test4/`
-7. **4 层快速测试**: `bash deploy/run_tp4_single_4l.sh`
-8. **80 层单机 TP=8**: 按 5.1 节命令启动
-9. **80 层双机 PP=2**（如需）: `bash deploy/run_pp2_80l.sh`
+6. **80 层单机 TP=8**: 按 5.1 节命令启动
+7. **80 层双机 PP=2**（如需）: `bash deploy/run_pp2_80l.sh`
 
 ### 配置模板
 
@@ -285,7 +275,6 @@ vllm-hy3/
 │   ├── run_pp2_80l.sh            # 双机 PP=2 启动（dump 模式）
 │   ├── run_pp2_80l_niah.sh       # 双机 PP=2 启动（NIAH 性能测试）
 │   ├── run_debug_pp2.sh          # 双机 PP=2 调试（可变 max-len）
-│   ├── run_tp4_single_4l.sh      # 单机 TP=4 子模型快速验证
 │   ├── run_pp2_ray_4l.sh         # 单机 PP=2 Ray 调试
 │   ├── run_pp_dump.sh            # PP=2 带 dump
 │   └── start_vllm_pp.sh          # 通用 PP 启动器
@@ -293,11 +282,7 @@ vllm-hy3/
 │   ├── opencode.json.template    # OpenCode 配置模板
 │   └── moe_configs/              # MoE kernel 调优参数
 │       └── E=192,N=384,device_name=KONGMING.json
-├── reference/
-│   └── submodel_debug/
-│       ├── sitecustomize.py      # PP=2 dump 钩子 + follower 修复
-│       ├── extract_layers.py     # 子模型提取工具
-│       └── ...
+├── reference/                    # 调试工具和参考数据
 ├── tools/
 │   ├── test_rccl_single.py       # 单机 RCCL 测试
 │   ├── test_rccl_multinode.py    # 双机 RCCL 测试
