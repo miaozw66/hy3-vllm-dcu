@@ -56,7 +56,7 @@ pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.m
 ### 3.1 克隆仓库
 
 ```bash
-git clone [<repo-url> vllm-hy3](https://github.com/miaozw66/hy3-vllm-dcu)
+git clone https://github.com/miaozw66/hy3-vllm-dcu
 cd vllm-hy3
 ```
 
@@ -77,7 +77,7 @@ vim deploy/env.sh
 | `NIC` | 通信网卡名 | `eno1` |
 | `DOCKER_NAME` | Docker 容器名（裸金属留空） | `""` |
 | `MODEL_PATH` | 80 层完整模型路径 | `/data/models/hy3-int8` |
-| `GPU_COUNT` | 每节点 GPU 数量 | `8` |
+| `GPU_COUNT` | 每节点 GPU 数量 | `4` |
 
 ### 3.3 验证 RCCL 通信（单机）
 
@@ -109,9 +109,9 @@ curl -s http://localhost:8000/v1/completions \
 ```
 
 
-## 5. 部署场景
+## 4. 部署场景
 
-### 5.1 单机 TP=8（8 卡，完整 80 层，可能有误，没在单机8卡启动过）
+### 4.1 单机 TP=8（8 卡，完整 80 层，可能有误，没在单机8卡启动过）
 
 ```bash
 python3 -m vllm.entrypoints.openai.api_server \
@@ -126,7 +126,7 @@ python3 -m vllm.entrypoints.openai.api_server \
 
 如需更长的上下文，逐步增大 `--max-model-len` 并调低 `--gpu-memory-utilization`。
 
-### 5.2 双机 PP=2（每机 4 卡，完整 80 层）
+### 4.2 双机 PP=2（每机 4 卡，完整 80 层）
 
 ```bash
 # 1. 确认 env.sh 中 NODE1_IP、DOCKER_NAME、NIC 配置正确
@@ -145,7 +145,7 @@ bash deploy/run_pp2_80l.sh
 bash deploy/run_pp2_80l_niah.sh
 ```
 
-### 5.3 调试模式（渐进增大 max-model-len）
+### 4.3 调试模式（渐进增大 max-model-len）
 
 ```bash
 bash deploy/run_debug_pp2.sh 8192    # 小上下文快速启动
@@ -153,27 +153,27 @@ bash deploy/run_debug_pp2.sh 32768   # 中等上下文
 bash deploy/run_debug_pp2.sh 131072  # 大上下文
 ```
 
-## 6. 双机 PP=2 环境要求
+## 5. 双机 PP=2 环境要求
 
-### 6.1 网络
+### 5.1 网络
 
 - 两台机器需通过 PCIe 网络互联，RCCL 使用 TCP 通信
 - 需要免密 SSH（Node 0 → Node 1）
 - 模型路径需要在两台机器上一致（NFS 挂载或各自存放）
 
-### 6.2 RCCL 验证（双机）
+### 5.2 RCCL 验证（双机）
 
 ```bash
 # 在 Node 0 上:
-RCCL_MASTER_ADDR=<主节点IP> python3 tools/test_rccl_multinode.py
+RCCL_MASTER_ADDR=<主节点IP> python3 tools/test_rccl_direct.py 0
 
 # 在 Node 1 上:
-RCCL_MASTER_ADDR=<主节点IP> python3 tools/test_rccl_multinode.py
+RCCL_MASTER_ADDR=<主节点IP> python3 tools/test_rccl_direct.py 1
 ```
 
-## 7. 性能测试
+## 6. 性能测试
 
-### 7.1 GPU 监控
+### 6.1 GPU 监控
 
 ```bash
 # 监控 600 秒，每 10 秒采样
@@ -185,13 +185,13 @@ MONITOR_NODES='[{"host":"192.168.1.100","type":"local","docker":""},
 python3 tools/monitor_gpu.py 600 10
 ```
 
-### 7.2 NIAH (Needle in a Haystack) 测试
+### 6.2 NIAH (Needle in a Haystack) 测试
 
 ```bash
 python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8192,16384,32768,65536,131072,262144
 ```
 
-## 8. 故障排查
+## 7. 故障排查
 
 ### RCCL 初始化超时
 
@@ -209,7 +209,7 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 
 添加 `--model-loader-extra-config '{"enable_multithread_load": true}'` 启用多线程加载（适用于 NFS）。
 
-## 9. 移植到新机器 — 步骤清单
+## 8. 移植到新机器 — 步骤清单
 
 将本项目移植到另一台海光 K100 DCU 机器的完整步骤：
 
@@ -218,7 +218,7 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 3. **克隆仓库**: `git clone <repo-url> && cd vllm-hy3`
 4. **编辑配置**: 修改 `deploy/env.sh` 中的 IP、NIC、路径、Docker 容器名
 5. **验证 RCCL**: `python3 tools/test_rccl_single.py`
-6. **80 层单机 TP=8**: 按 5.1 节命令启动
+6. **80 层单机 TP=8**: 按 4.1 节命令启动
 7. **80 层双机 PP=2**（如需）: `bash deploy/run_pp2_80l.sh`
 
 ### 配置模板
@@ -230,7 +230,7 @@ cp configs/opencode.json.template configs/opencode.json
 # 编辑 configs/opencode.json，将 <MODEL_PATH> 替换为实际路径
 ```
 
-## 10. 项目文件结构
+## 9. 项目文件结构
 
 ```
 vllm-hy3/
@@ -240,8 +240,9 @@ vllm-hy3/
 │   ├── run_pp2_80l.sh            # 双机 PP=2 启动（dump 模式）
 │   ├── run_pp2_80l_niah.sh       # 双机 PP=2 启动（NIAH 性能测试）
 │   ├── run_debug_pp2.sh          # 双机 PP=2 调试（可变 max-len）
-│   ├── run_pp2_ray_4l.sh         # 单机 PP=2 Ray 调试
-│   ├── run_pp_dump.sh            # PP=2 带 dump
+│   ├── run_pp2_ray_4l.sh         # 单机 PP=2 Ray 调试（4 层子模型）
+│   ├── run_pp_dump.sh            # 单机 PP=2 Ray 调试（带 dump）
+│   ├── run_tp4_single_4l.sh      # 单机 TP=4 快速验证（4 层子模型）
 │   └── start_vllm_pp.sh          # 通用 PP 启动器
 ├── configs/
 │   ├── opencode.json.template    # OpenCode 配置模板
@@ -260,7 +261,7 @@ vllm-hy3/
 └── docs/                         # 移植过程文档（移植记录、调优指南等）
 ```
 
-## 11. 已知问题与限制
+## 10. 已知问题与限制
 
 1. **AITER CK kernel 暂未启用**: gfx928 不在上游 `_ON_GFX9` 列表，且 CK kernel 在 gfx928 上无预编译 `.co` 文件，当前部署默认 `VLLM_ROCM_USE_AITER=0`
 2. **NFS 权重加载慢**: 多线程加载 (`enable_multithread_load`) 可缓解
