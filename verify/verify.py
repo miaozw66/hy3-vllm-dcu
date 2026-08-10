@@ -38,8 +38,12 @@ from vllm.model_executor.model_loader import get_model_loader
 from vllm.model_executor.models.hy_v3 import HYV3ForCausalLM, HYV3DecoderLayer
 
 # ── 配置 ──────────────────────────────────────────────
-MODEL_DIR = "/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master"
-GOLDEN_DIR = "/data/mzw/MetaInfer/nodes/worker24/.metainfer/tasks/hy3-test2-44db1034/code/004/golden_dump"
+MODEL_DIR = os.environ.get(
+    "VLLM_MODEL_PATH",
+    "/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master")
+GOLDEN_DIR = os.environ.get(
+    "VLLM_GOLDEN_DUMP_DIR",
+    "/data/mzw/MetaInfer/nodes/worker24/.metainfer/tasks/hy3-test2-44db1034/code/004/golden_dump")
 PROMPT = "中国的首都是"
 NUM_LAYERS = 65  # 完整验证：前 65 层（L0 稠密 + L1-64 MoE），根因已修复（路由 autocast 外）
 # 退化层：最近一次运行中 05_mlp_out 余弦相似度 < 0.996 的层。

@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
-"""Single-node RCCL test — run on Node 1 only. No cross-node needed."""
+"""Single-node RCCL test — run on a single node only. No cross-node needed.
+
+Environment variables:
+  RCCL_MASTER_ADDR  — target IP for interface detection (default: 10.18.17.71)
+"""
 import os, sys, socket, fcntl, struct
+
+MASTER_ADDR = os.environ.get("RCCL_MASTER_ADDR", "10.18.17.71")
 
 
 def main():
@@ -8,7 +14,7 @@ def main():
 
     # Detect interface
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("10.18.17.71", 1))
+    s.connect((MASTER_ADDR, 1))
     src_ip = s.getsockname()[0]
     s.close()
     iface = None

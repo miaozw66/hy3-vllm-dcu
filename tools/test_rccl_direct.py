@@ -4,8 +4,15 @@
 Usage:
   Node 0: python3 test_rccl_direct.py 0
   Node 1: python3 test_rccl_direct.py 1
+
+Environment variables:
+  RCCL_MASTER_ADDR  — primary node IP (default: 10.18.17.71)
+  RCCL_MASTER_PORT  — port (default: 29505)
 """
 import os, sys, socket, fcntl, struct, traceback
+
+MASTER_ADDR = os.environ.get("RCCL_MASTER_ADDR", "10.18.17.71")
+MASTER_PORT = os.environ.get("RCCL_MASTER_PORT", "29505")
 
 
 def main():
@@ -14,7 +21,7 @@ def main():
 
     # --- Detect interface ---
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    s.connect(("10.18.17.71", 1))
+    s.connect((MASTER_ADDR, 1))
     src_ip = s.getsockname()[0]
     s.close()
 
@@ -43,8 +50,8 @@ def main():
     os.environ["NCCL_DEBUG"] = "INFO"
     os.environ["NCCL_IB_DISABLE"] = "1"
     os.environ["HSA_FORCE_FINE_GRAIN_PCIE"] = "1"
-    os.environ["MASTER_ADDR"] = "10.18.17.71"
-    os.environ["MASTER_PORT"] = "29505"
+    os.environ["MASTER_ADDR"] = MASTER_ADDR
+    os.environ["MASTER_PORT"] = MASTER_PORT
     os.environ["NODE_RANK"] = str(node_rank)
     os.environ["NNODES"] = "2"
     os.environ["NPROC_PER_NODE"] = "4"
@@ -89,7 +96,7 @@ def worker_fn(local_rank, node_rank):
 
     dist.init_process_group(
         backend="nccl",
-        init_method="tcp://10.18.17.71:29505",
+        init_method=f"tcp://{MASTER_ADDR}:{MASTER_PORT}",
         world_size=world_size,
         rank=global_rank,
     )

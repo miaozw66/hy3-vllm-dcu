@@ -13,8 +13,12 @@ import torch.nn.functional as F
 
 
 # ── 配置 ──────────────────────────────────────────────
-MODEL_DIR = "/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master"
-GOLDEN_DIR = "/data/mzw/MetaInfer/nodes/worker24/.metainfer/tasks/hy3-test2-44db1034/code/004/golden_dump"
+MODEL_DIR = os.environ.get(
+    "VLLM_MODEL_PATH",
+    "/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master")
+GOLDEN_DIR = os.environ.get(
+    "VLLM_GOLDEN_DUMP_DIR",
+    "/data/mzw/MetaInfer/nodes/worker24/.metainfer/tasks/hy3-test2-44db1034/code/004/golden_dump")
 PROMPT = "中国的首都是"
 
 START_LAYER = 65

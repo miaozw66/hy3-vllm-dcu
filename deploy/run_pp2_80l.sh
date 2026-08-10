@@ -3,41 +3,29 @@
 # Launches on 2 nodes (8 GPUs total: 4/node, TP=4, PP=2)
 #
 # Usage:
-#   bash run_pp2_80l.sh
+#   1. Edit deploy/env.sh with your machine configuration
+#   2. bash deploy/run_pp2_80l.sh
 #
 # Prerequisites:
-#   - Node 0 (10.18.17.71) and Node 1 (10.18.17.74) accessible
-#   - Node 1 has Docker container "mmh_qwen_opt" with same vLLM installation
-#   - /data/mzw is NFS-mounted on both nodes
-#   - vLLM 0.18.1 installed (with dump hooks already patched on both nodes)
+#   - Node 0 (MASTER_ADDR) and Node 1 (NODE1_IP) accessible via SSH
+#   - vLLM 0.18.1 installed on both nodes
+#   - Model path accessible on both nodes (NFS or Docker volume)
 set -e
 
+source "$(dirname "$0")/env.sh"
+
 # ── Environment ────────────────────────────────────────────
-export PYTHONUNBUFFERED=1
-export NCCL_SOCKET_IFNAME=eno1
+export NCCL_SOCKET_IFNAME=$NIC
 export NCCL_DEBUG=WARN
-export NCCL_IB_DISABLE=1
-export HSA_FORCE_FINE_GRAIN_PCIE=1
-# RCCL communication tuning
-export RCCL_BUFFSIZE=8388608
-export NCCL_MIN_NCHANNELS=4
-export NCCL_PROTO=Simple
-export NCCL_ALGO=Ring
 # AITER: Disabled — CK kernels not compiled for gfx928
 export VLLM_ROCM_USE_AITER=0
 # MoE tuning config
-export VLLM_TUNED_CONFIG_FOLDER=/data/mzw/vllm-hy3/moe_configs
+export VLLM_TUNED_CONFIG_FOLDER=$MOE_CONFIG_DIR
 
-DUMP_DIR=/data/mzw/vllm-hy3/dumps/pp2_80l
-LOG_DIR=/data/mzw/vllm-hy3/logs
-MASTER_ADDR=10.18.17.71
 MASTER_PORT=29511
-NODE1_IP=10.18.17.74
-DOCKER_NAME=mmh_qwen_opt
-MODEL_PATH=/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master
 
-# ── Cleanup previous dumps ─────────────────────────────────
-rm -rf "$DUMP_DIR"
+DUMP_DIR=$PROJECT_ROOT/dumps/pp2_80l
+
 mkdir -p "$DUMP_DIR"
 mkdir -p "$LOG_DIR"
 
@@ -48,45 +36,45 @@ echo "Dump dir: $DUMP_DIR"
 echo "Log dir: $LOG_DIR"
 echo ""
 
-# ── Launch Node 1 first (PP follower) ──────────────────────
-echo "[$(date)] Launching Node 1 (PP rank 1, 10.18.17.74)..."
-# Clean up any residual processes on node 1 (must match api_server, VLLM::EngineCore, and VLLM::Worker_*)
-ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$NODE1_IP" \
-  "docker exec $DOCKER_NAME bash -c 'pkill -9 -f vllm.entrypoints 2>/dev/null || true; pkill -9 -f VLLM:: 2>/dev/null || true; sleep 2; echo cleaned'" 2>/dev/null || true
+# ── Helper: remote execution (Docker or bare-metal) ────────
+_remote_exec() {
+    local node_ip=$1; shift
+    local env_vars="$1"; shift
+    local cmd="$1"
+    if [ -n "$DOCKER_NAME" ]; then
+        ssh -o StrictHostKeyChecking=no "$node_ip" \
+            "docker exec $env_vars $DOCKER_NAME bash -c \"$cmd\""
+    else
+        ssh -o StrictHostKeyChecking=no "$node_ip" \
+            "bash -c \"$env_vars $cmd\""
+    fi
+}
 
-ssh -o StrictHostKeyChecking=no "$NODE1_IP" \
-  "docker exec -e NCCL_SOCKET_IFNAME=eno1 \
-      -e NCCL_DEBUG=WARN \
-      -e NCCL_IB_DISABLE=1 \
-      -e HSA_FORCE_FINE_GRAIN_PCIE=1 \
-      -e RCCL_BUFFSIZE=8388608 \
-      -e NCCL_MIN_NCHANNELS=4 \
-      -e NCCL_PROTO=Simple \
-      -e NCCL_ALGO=Ring \
-      -e PYTHONUNBUFFERED=1 \
-      -e VLLM_ROCM_USE_AITER=0 \
-      -e VLLM_HY3_DUMP_DIR=$DUMP_DIR \
-      -e VLLM_HY3_DUMP_SKIP=2 \
-      $DOCKER_NAME bash -c \"
-        rm -f /tmp/node1_80l.log
-        python3 -u -m vllm.entrypoints.openai.api_server \
-          --model $MODEL_PATH \
-          --pipeline-parallel-size 2 \
-          --tensor-parallel-size 4 \
-          --nnodes 2 \
-          --node-rank 1 \
-          --master-addr $MASTER_ADDR \
-          --master-port $MASTER_PORT \
-          --trust-remote-code \
-          --enforce-eager \
-          --max-model-len 262144 \
-          --gpu-memory-utilization 0.90 \
-          --enable-auto-tool-choice \
-          --tool-call-parser hy_v3 \
-          --port 8000 \
-          > /tmp/node1_80l.log 2>&1 &
-        echo \\\$!
-      \"" &
+# ── Launch Node 1 first (PP follower) ──────────────────────
+echo "[$(date)] Launching Node 1 (PP rank 1, $NODE1_IP)..."
+# Clean up any residual processes on node 1
+ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$NODE1_IP" \
+    "if [ -n \"$DOCKER_NAME\" ]; then docker exec $DOCKER_NAME bash -c 'pkill -9 -f vllm.entrypoints 2>/dev/null || true; pkill -9 -f VLLM:: 2>/dev/null || true'; else pkill -9 -f vllm.entrypoints 2>/dev/null || true; pkill -9 -f VLLM:: 2>/dev/null || true; fi; sleep 2; echo cleaned" 2>/dev/null || true
+
+_remote_exec "$NODE1_IP" \
+    "-e NCCL_SOCKET_IFNAME=$NIC -e NCCL_DEBUG=WARN -e NCCL_IB_DISABLE=1 -e HSA_FORCE_FINE_GRAIN_PCIE=1 -e RCCL_BUFFSIZE=$RCCL_BUFFSIZE -e NCCL_MIN_NCHANNELS=$NCCL_MIN_NCHANNELS -e NCCL_PROTO=$NCCL_PROTO -e NCCL_ALGO=$NCCL_ALGO -e PYTHONUNBUFFERED=1 -e VLLM_ROCM_USE_AITER=0 -e VLLM_HY3_DUMP_DIR=$DUMP_DIR -e VLLM_HY3_DUMP_SKIP=2" \
+    "rm -f /tmp/node1_80l.log
+     python3 -u -m vllm.entrypoints.openai.api_server \
+       --model $MODEL_PATH \
+       --pipeline-parallel-size 2 \
+       --tensor-parallel-size 4 \
+       --nnodes 2 \
+       --node-rank 1 \
+       --master-addr $MASTER_ADDR \
+       --master-port $MASTER_PORT \
+       --trust-remote-code \
+       --enforce-eager \
+       --max-model-len 262144 \
+       --gpu-memory-utilization 0.90 \
+       --enable-auto-tool-choice \
+       --tool-call-parser hy_v3 \
+       --port 8000 \
+       > /tmp/node1_80l.log 2>&1 &" &
 NODE1_SSH_PID=$!
 echo "[$(date)] Node 1 SSH PID: $NODE1_SSH_PID"
 
@@ -94,7 +82,7 @@ echo "[$(date)] Node 1 SSH PID: $NODE1_SSH_PID"
 sleep 5
 
 # ── Launch Node 0 (PP leader) ──────────────────────────────
-echo "[$(date)] Launching Node 0 (PP rank 0, 10.18.17.71)..."
+echo "[$(date)] Launching Node 0 (PP rank 0, $MASTER_ADDR)..."
 export VLLM_HY3_DUMP_DIR="$DUMP_DIR"
 export VLLM_HY3_DUMP_SKIP=2
 

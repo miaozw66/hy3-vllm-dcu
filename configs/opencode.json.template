@@ -1,0 +1,22 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "hy3//<MODEL_PATH>",
+  "provider": {
+    "hy3": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Hy3-Channel-INT8 (Local)",
+      "options": {
+        "baseURL": "http://localhost:8000/v1"
+      },
+      "models": {
+        "<MODEL_PATH>": {
+          "name": "Hy3-Channel-INT8-w8a8",
+          "limit": {
+            "context": 245760,
+            "output": 32768
+          }
+        }
+      }
+    }
+  }
+}

@@ -4,11 +4,15 @@
 Usage:
   Node 0: bash test_rccl_wrapper.sh 0
   Node 1: bash test_rccl_wrapper.sh 1
+
+Environment variables:
+  RCCL_MASTER_ADDR  — primary node IP (default: 10.18.17.71)
+  RCCL_MASTER_PORT  — port (default: 29505)
 """
 import os, sys, socket, fcntl, struct, torch, torch.distributed as dist
 
-MASTER_ADDR = "10.18.17.71"
-MASTER_PORT = "29505"
+MASTER_ADDR = os.environ.get("RCCL_MASTER_ADDR", "10.18.17.71")
+MASTER_PORT = os.environ.get("RCCL_MASTER_PORT", "29505")
 
 
 def detect_iface(target_ip):

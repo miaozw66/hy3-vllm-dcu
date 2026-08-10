@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
-"""把文档内容发给 hy3 模型（vLLM 服务），请求生成 50-100 字总结。"""
+"""把文档内容发给 hy3 模型（vLLM 服务），请求生成 50-100 字总结。
+
+环境变量:
+  VLLM_API_URL    — vLLM API 地址 (默认 http://localhost:8000/v1/completions)
+  VLLM_MODEL_PATH — 模型路径 (默认 /data/model/hygon/...)
+  VLLM_DOC_PATH   — 要总结的文档路径 (默认 /data/mzw/海光卡大模型推理框架移植流程.md)
+"""
 import json
+import os
 import sys
 import urllib.request
 
-API_URL = "http://10.18.17.71:8000/v1/completions"
-MODEL = "/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master"
-DOC_PATH = "/data/mzw/海光卡大模型推理框架移植流程.md"
+API_URL = os.environ.get("VLLM_API_URL", "http://localhost:8000/v1/completions")
+MODEL = os.environ.get("VLLM_MODEL_PATH",
+    "/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master")
+DOC_PATH = os.environ.get("VLLM_DOC_PATH",
+    "/data/mzw/海光卡大模型推理框架移植流程.md")
 
 with open(DOC_PATH, "r", encoding="utf-8") as f:
     doc = f.read()

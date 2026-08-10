@@ -13,25 +13,28 @@ logs/
 dumps/
 *.log
 
-
 # ── Backups and temp ──
 cleanup/
 *.bak
 *.tmp
 
-# ── Model test dirs ──
-test12/
-test12bf16/
-test16/
-test40/
-submodel_debug/
+# ── Model test dirs (root level only) ──
+/test12/
+/test12bf16/
+/test16/
+/test40/
+/submodel_debug/
 
-# ── Reference (not our work) ──
-reference/
+# ── Third-party upstream (not our work) ──
 upstream/
 
-# ── Non-core dirs ──
-docs/
+# ── Large binary golden-dump data ──
+reference/golden_dump_int8/
+
+# ── Per-user config (template is tracked) ──
+configs/opencode.json
+
+# ── Web UI artifacts ──
 web/
 
 # ── IDE / editor ──

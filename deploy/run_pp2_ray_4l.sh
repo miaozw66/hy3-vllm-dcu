@@ -1,10 +1,16 @@
 #!/bin/bash
-export PYTHONUNBUFFERED=1
-export NCCL_SOCKET_IFNAME=eno1
+# Single-node PP=2 4-layer debug launch (Ray backend)
+#
+# Usage:
+#   1. Edit deploy/env.sh with your machine configuration
+#   2. bash deploy/run_pp2_ray_4l.sh
+set -e
+
+source "$(dirname "$0")/env.sh"
+
+export NCCL_SOCKET_IFNAME=$NIC
 export NCCL_DEBUG=WARN
-export NCCL_IB_DISABLE=1
-export HSA_FORCE_FINE_GRAIN_PCIE=1
-export VLLM_HY3_DUMP_DIR=/data/mzw/vllm-hy3/dumps/pp2_4l
+export VLLM_HY3_DUMP_DIR=$PROJECT_ROOT/dumps/pp2_4l
 export VLLM_HY3_DUMP_SKIP=1
 
 LOG=/tmp/vllm_pp2_4l_ray6.log
@@ -18,7 +24,7 @@ echo "VLLM_HY3_DUMP_SKIP=$VLLM_HY3_DUMP_SKIP"
 env | grep VLLM >> "$LOG"
 
 exec script -f -c "python3 -u -m vllm.entrypoints.openai.api_server \
-  --model /data/mzw/vllm-hy3/submodel_debug/test4 \
+  --model $SUBMODEL_PATH \
   --pipeline-parallel-size 2 \
   --tensor-parallel-size 4 \
   --trust-remote-code \

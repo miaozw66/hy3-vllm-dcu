@@ -1,15 +1,17 @@
 #!/bin/bash
 # Debug PP=2 launch — test progressively larger max-model-len
-# Usage: bash run_debug_pp2.sh <MAX_MODEL_LEN>
+#
+# Usage:
+#   1. Edit deploy/env.sh with your machine configuration
+#   2. bash deploy/run_debug_pp2.sh [max_model_len]
 set -e
+
+source "$(dirname "$0")/env.sh"
 
 MAX_MODEL_LEN=${1:-8192}
 
-export PYTHONUNBUFFERED=1
-export NCCL_SOCKET_IFNAME=eno1
+export NCCL_SOCKET_IFNAME=$NIC
 export NCCL_DEBUG=WARN
-export NCCL_IB_DISABLE=1
-export HSA_FORCE_FINE_GRAIN_PCIE=1
 # AITER: Enable Composable Kernel acceleration for Hygon DCU
 export VLLM_ROCM_USE_AITER=1
 export VLLM_ROCM_USE_AITER_LINEAR=1
@@ -17,12 +19,7 @@ export VLLM_ROCM_USE_AITER_MOE=1
 export VLLM_ROCM_USE_AITER_RMSNORM=1
 export VLLM_ROCM_USE_AITER_MHA=1
 
-LOG_DIR=/data/mzw/vllm-hy3/logs
-MASTER_ADDR=10.18.17.71
 MASTER_PORT=29561
-NODE1_IP=10.18.17.74
-DOCKER_NAME=mmh_qwen_opt
-MODEL_PATH=/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master
 
 mkdir -p "$LOG_DIR"
 
@@ -30,46 +27,48 @@ echo "=== Debug PP=2 Launch: max-model-len=${MAX_MODEL_LEN} ==="
 echo "Started at: $(date)"
 echo ""
 
+# ── Helper: remote execution (Docker or bare-metal) ────────
+_remote_exec() {
+    local node_ip=$1; shift
+    local env_vars="$1"; shift
+    local cmd="$1"
+    if [ -n "$DOCKER_NAME" ]; then
+        ssh -o StrictHostKeyChecking=no "$node_ip" \
+            "docker exec $env_vars $DOCKER_NAME bash -c \"$cmd\""
+    else
+        ssh -o StrictHostKeyChecking=no "$node_ip" \
+            "bash -c \"$env_vars $cmd\""
+    fi
+}
+
 # ── Launch Node 1 first ──────────────────────────────────────
 echo "[$(date)] Launching Node 1 (PP rank 1)..."
-# Clean up any residual processes on node 1 (must match api_server, VLLM::EngineCore, and VLLM::Worker_*)
+# Clean up any residual processes on node 1
 ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$NODE1_IP" \
-  "docker exec $DOCKER_NAME bash -c 'pkill -9 -f vllm.entrypoints 2>/dev/null || true; pkill -9 -f VLLM:: 2>/dev/null || true; sleep 2; echo cleaned'" 2>/dev/null || true
+    "if [ -n \"$DOCKER_NAME\" ]; then docker exec $DOCKER_NAME bash -c 'pkill -9 -f vllm.entrypoints 2>/dev/null || true; pkill -9 -f VLLM:: 2>/dev/null || true'; else pkill -9 -f vllm.entrypoints 2>/dev/null || true; pkill -9 -f VLLM:: 2>/dev/null || true; fi; sleep 2; echo cleaned" 2>/dev/null || true
 sleep 1
 
-ssh -o StrictHostKeyChecking=no "$NODE1_IP" \
-  "docker exec -e NCCL_SOCKET_IFNAME=eno1 \
-      -e NCCL_DEBUG=WARN \
-      -e NCCL_IB_DISABLE=1 \
-      -e HSA_FORCE_FINE_GRAIN_PCIE=1 \
-      -e PYTHONUNBUFFERED=1 \
-      -e VLLM_ROCM_USE_AITER=1 \
-      -e VLLM_ROCM_USE_AITER_LINEAR=1 \
-      -e VLLM_ROCM_USE_AITER_MOE=1 \
-      -e VLLM_ROCM_USE_AITER_RMSNORM=1 \
-      -e VLLM_ROCM_USE_AITER_MHA=1 \
-      $DOCKER_NAME bash -c \"
-        rm -f /tmp/node1_debug.log
-        python3 -u -m vllm.entrypoints.openai.api_server \
-          --model $MODEL_PATH \
-          --pipeline-parallel-size 2 \
-          --tensor-parallel-size 4 \
-          --nnodes 2 \
-          --node-rank 1 \
-          --master-addr $MASTER_ADDR \
-          --master-port $MASTER_PORT \
-          --trust-remote-code \
-          --enforce-eager \
-          --max-model-len $MAX_MODEL_LEN \
-          --gpu-memory-utilization 0.85 \
-          --port 8000 \
-          > /tmp/node1_debug.log 2>&1 &
-        echo \\\$!
-      \"" &
+_remote_exec "$NODE1_IP" \
+    "-e NCCL_SOCKET_IFNAME=$NIC -e NCCL_DEBUG=WARN -e NCCL_IB_DISABLE=1 -e HSA_FORCE_FINE_GRAIN_PCIE=1 -e PYTHONUNBUFFERED=1 -e VLLM_ROCM_USE_AITER=1 -e VLLM_ROCM_USE_AITER_LINEAR=1 -e VLLM_ROCM_USE_AITER_MOE=1 -e VLLM_ROCM_USE_AITER_RMSNORM=1 -e VLLM_ROCM_USE_AITER_MHA=1" \
+    "rm -f /tmp/node1_debug.log
+     python3 -u -m vllm.entrypoints.openai.api_server \
+       --model $MODEL_PATH \
+       --pipeline-parallel-size 2 \
+       --tensor-parallel-size 4 \
+       --nnodes 2 \
+       --node-rank 1 \
+       --master-addr $MASTER_ADDR \
+       --master-port $MASTER_PORT \
+       --trust-remote-code \
+       --enforce-eager \
+       --max-model-len $MAX_MODEL_LEN \
+       --gpu-memory-utilization 0.85 \
+       --port 8000 \
+       > /tmp/node1_debug.log 2>&1 &" &
 NODE1_SSH_PID=$!
 echo "[$(date)] Node 1 SSH PID: $NODE1_SSH_PID"
 
-# Give node 1 more time to start (matching original working script)
+# Give node 1 more time to start
 sleep 5
 
 # ── Launch Node 0 ────────────────────────────────────────────
@@ -111,5 +110,5 @@ done
 echo ""
 echo "[$(date)] Server did not start within 20 minutes."
 echo "Node 0 log: $NODE0_LOG"
-echo "Check Node 1: ssh 10.18.17.74 'docker exec mmh_qwen_opt tail -100 /tmp/node1_debug.log'"
+echo "Check Node 1: ssh $NODE1_IP 'if [ -n \"$DOCKER_NAME\" ]; then docker exec $DOCKER_NAME tail -100 /tmp/node1_debug.log; else tail -100 /tmp/node1_debug.log; fi'"
 exit 1

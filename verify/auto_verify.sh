@@ -2,10 +2,12 @@
 # Auto-wait for vLLM server to be ready, then run verification
 set -e
 
+source "$(dirname "$0")/../deploy/env.sh"
+
 SERVER_URL="http://localhost:8000"
-COMPARE_SCRIPT="/data/mzw/vllm-hy3/compare_80l_full.py"
-DUMP_DIR="/data/mzw/vllm-hy3/dumps/pp2_80l"
-REPORT="/data/mzw/vllm-hy3/verification_80l_$(date +%m%d_%H%M).txt"
+COMPARE_SCRIPT="$PROJECT_ROOT/verify/compare_80l_full.py"
+DUMP_DIR="$PROJECT_ROOT/dumps/pp2_80l"
+REPORT="$PROJECT_ROOT/verification_80l_$(date +%m%d_%H%M).txt"
 
 echo "=== Auto-Verify started at $(date) ==="
 echo "Waiting for server on $SERVER_URL ..."
@@ -24,7 +26,7 @@ for i in $(seq 1 180); do
     for j in $(seq 1 10); do
         sleep 1
         # Check for terminal errors
-        NODE0_LOG=$(ls -t /data/mzw/vllm-hy3/logs/vllm_node0_pp2_80l_*.log 2>/dev/null | head -1)
+        NODE0_LOG=$(ls -t "$LOG_DIR"/vllm_node0_pp2_80l_*.log 2>/dev/null | head -1)
         if grep -q "RuntimeError\|ERROR.*WorkerProc failed\|Engine core initialization failed" "$NODE0_LOG" 2>/dev/null; then
             echo "$(date) ✗ Error detected in Node 0 log!"
             grep -E "RuntimeError|ERROR.*WorkerProc|Engine core" "$NODE0_LOG" | tail -5

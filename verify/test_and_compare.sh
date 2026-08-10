@@ -4,11 +4,12 @@
 
 set -e
 
+source "$(dirname "$0")/../deploy/env.sh"
+
 SERVER_URL="http://localhost:8000"
-DUMP_DIR="/data/mzw/vllm-hy3/dumps/pp2_80l"
-COMPARE_SCRIPT="/data/mzw/vllm-hy3/compare_80l_full.py"
-REPORT_FILE="/data/mzw/vllm-hy3/verification_report_80l_latest.txt"
-LOG_DIR="/data/mzw/vllm-hy3/logs"
+DUMP_DIR="$PROJECT_ROOT/dumps/pp2_80l"
+COMPARE_SCRIPT="$PROJECT_ROOT/verify/compare_80l_full.py"
+REPORT_FILE="$PROJECT_ROOT/verification_report_80l_latest.txt"
 
 echo "=== HY3 80L Verification Test ==="
 echo "Started at: $(date)"

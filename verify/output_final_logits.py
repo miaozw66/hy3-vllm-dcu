@@ -7,7 +7,9 @@ import safetensors
 import torch
 import torch.nn.functional as F
 
-MODEL_DIR = "/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master"
+MODEL_DIR = os.environ.get(
+    "VLLM_MODEL_PATH",
+    "/data/model/hygon/Hy3-Channel-INT8-w8a8/models/hygon--Hy3-Channel-INT8-w8a8/snapshots/master")
 PROMPT = "中国的首都是"
 HIDDEN_SIZE = 4096
 VOCAB_SIZE = 128256  # Hy3 vocab size

@@ -12,8 +12,10 @@ import os
 import torch
 import torch.nn.functional as F
 
-GOLDEN_DIR = "/data/mzw/MetaInfer/nodes/worker24/.metainfer/tasks/hy3-test2-44db1034/code/004/golden_dump"
-DUMP_DIR = "/tmp/pp_boundary"
+GOLDEN_DIR = os.environ.get(
+    "VLLM_GOLDEN_DUMP_DIR",
+    "/data/mzw/MetaInfer/nodes/worker24/.metainfer/tasks/hy3-test2-44db1034/code/004/golden_dump")
+DUMP_DIR = os.environ.get("VLLM_PP_BOUNDARY_DIR", "/tmp/pp_boundary")
 
 
 def cosine_similarity(a, b):

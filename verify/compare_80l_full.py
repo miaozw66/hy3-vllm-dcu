@@ -18,8 +18,12 @@ import torch.nn.functional as F
 
 
 # ── Default paths ──────────────────────────────────────────────
-DEFAULT_GOLDEN_DIR = "/data/mzw/MetaInfer/nodes/worker24/.metainfer/tasks/hy3-test2-44db1034/code/004/golden_dump"
-DEFAULT_DUMP_DIR = "/data/mzw/vllm-hy3/dumps/pp2_80l"
+DEFAULT_GOLDEN_DIR = os.environ.get(
+    "VLLM_GOLDEN_DUMP_DIR",
+    "/data/mzw/MetaInfer/nodes/worker24/.metainfer/tasks/hy3-test2-44db1034/code/004/golden_dump")
+DEFAULT_DUMP_DIR = os.environ.get(
+    "VLLM_DUMP_DIR",
+    "/data/mzw/vllm-hy3/dumps/pp2_80l")
 
 DUMP_POINTS = [
     "00_input",
