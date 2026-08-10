@@ -10,6 +10,7 @@ __pycache__/
 logs/
 dumps/
 *.log
+outputs/
 
 # ── Backups and temp ──
 cleanup/
@@ -21,10 +22,14 @@ cleanup/
 /test12bf16/
 /test16/
 /test40/
-/submodel_debug/
+
+# ── Large model weights (submodel test dirs) ──
+reference/submodel_debug/test4/
+reference/submodel_debug/test4_mixed/
 
 # ── Third-party upstream (not our work) ──
 upstream/
+vllm/docs/
 
 # ── Large binary golden-dump data ──
 reference/golden_dump_int8/
