@@ -20,8 +20,6 @@
 pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
 ```
 
-该 wheel 包含 HY3 模型文件和全部 vLLM 修改，安装后 `vllm` 包即可使用。
-
 ## 1.2 下载模型权重
 
 ```Bash
@@ -29,7 +27,7 @@ pip install modelscope
 modelscope download --model hygon/Hy3-Channel-INT8-w8a8 --local_dir /data/model/Hy3-Channel-INT8-w8a8
 ```
 
-> 模型 ~280GB（99 个 safetensors 分片），双机部署需放在两台机器都能访问的路径（NFS 或各自存放）。
+> 模型 ~280GB（99 个 safetensors 分片），双机部署需放在两台机器都能访问的路径。
 
 ## 1.3 克隆仓库
 
@@ -40,7 +38,7 @@ cd vllm-hy3
 
 # 2. 配置机器信息
 
-编辑 `deploy/env.sh`，填入本机（和目标机器）的实际信息：
+编辑 `deploy/env.sh`，所有启动脚本都会读取此文件：
 
 ```Bash
 vim deploy/env.sh
@@ -48,45 +46,39 @@ vim deploy/env.sh
 
 | 变量 | 说明 |
 |------|------|
-| `MASTER_ADDR` | 主节点 IP（单机填本机 IP） |
+| `MASTER_ADDR` | 主节点 IP |
 | `NODE1_IP` | 从节点 IP（单机留空） |
-| `NIC` | 通信网卡名（`ip addr show` 查看） |
-| `DOCKER_NAME` | Docker 容器名（裸金属部署留空） |
+| `NIC` | 通信网卡名 |
+| `DOCKER_NAME` | Docker 容器名（裸金属留空） |
 | `MODEL_PATH` | 模型路径 |
 
-# 3. 设置环境变量
+# 3. 环境变量
+
+`env.sh` 中已预设以下变量，启动脚本 `source env.sh` 后自动生效：
 
 ```Bash
-export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
-
 # ── RCCL 通信 ──────────────────────────────────────────
-export NCCL_SOCKET_IFNAME=eno1          # 网卡名，按实际情况修改
-export NCCL_IB_DISABLE=1                # K100 不走 InfiniBand
-export HSA_FORCE_FINE_GRAIN_PCIE=1
 export RCCL_BUFFSIZE=8388608
 export NCCL_MIN_NCHANNELS=4
 export NCCL_PROTO=Simple
 export NCCL_ALGO=Ring
 
-# ── AITER ──────────────────────────────────────────────
-export VLLM_ROCM_USE_AITER=0            # gfx928 暂不启用 CK 加速
-
 # ── 通用 ──────────────────────────────────────────────
 export PYTHONUNBUFFERED=1
-export NCCL_DEBUG=WARN
-
-# ── 模型路径 ──────────────────────────────────────────
-export MODEL_PATH=/data/model/Hy3-Channel-INT8-w8a8
+export NCCL_IB_DISABLE=1
+export HSA_FORCE_FINE_GRAIN_PCIE=1
 ```
 
-> **海光 CPU 绑核**（可选，Intel CPU 不需要）：
-> ```Bash
-> export VLLM_NUMA_BIND=1
-> export VLLM_RANK0_NUMA=0; export VLLM_RANK1_NUMA=1
-> export VLLM_RANK2_NUMA=2; export VLLM_RANK3_NUMA=3
-> export VLLM_RANK4_NUMA=4; export VLLM_RANK5_NUMA=5
-> export VLLM_RANK6_NUMA=6; export VLLM_RANK7_NUMA=7
-> ```
+手动启动时，补充以下变量：
+
+```Bash
+export HIP_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+export NCCL_SOCKET_IFNAME=eno1          # 网卡名，按实际情况修改
+export NCCL_DEBUG=WARN
+export VLLM_ROCM_USE_AITER=0            # gfx928 暂不启用 CK 加速
+export VLLM_TUNED_CONFIG_FOLDER=/path/to/vllm-hy3/configs/moe_configs
+export MODEL_PATH=/data/model/Hy3-Channel-INT8-w8a8
+```
 
 # 4. 验证 RCCL 通信
 
@@ -124,16 +116,18 @@ python3 -m vllm.entrypoints.openai.api_server \
 **前置条件**：Node 0 → Node 1 免密 SSH，模型路径两台机器一致。
 
 ```Bash
-# 标准启动
+# 标准启动（max-model-len=262144, gpu-mem=0.90）
 bash deploy/run_pp2_80l.sh
 
-# 大上下文测试（256K）
+# 大上下文测试（256K，同上参数）
 bash deploy/run_pp2_80l_niah.sh
 
 # 可变上下文调试
 bash deploy/run_debug_pp2.sh 8192     # 小上下文快速启动
 bash deploy/run_debug_pp2.sh 131072   # 大上下文
 ```
+
+> PP=2 启动脚本会自动：通过 SSH 在 Node 1 拉起 follower → 在 Node 0 拉起 leader → 等待服务就绪。
 
 # 6. 测试推理
 
