@@ -36,7 +36,8 @@ reference/golden_dump_int8/
 configs/opencode.json
 
 # ── Project docs (local only) ──
-/docs/
+/docs/*
+!/docs/CUDA_Graph_*.md
 /verify/
 
 # ── Web UI artifacts ──

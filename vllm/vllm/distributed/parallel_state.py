@@ -1624,8 +1624,11 @@ def initialize_model_parallel(
             .unbind(0)
         )
         group_ranks = [x.tolist() for x in group_ranks]
+    # HY3/DCU workaround: RCCL 2.22.3 P2P communicators created after CUDA graph
+    # capture poll for ~2^15 ms per step (graph replay + lazy PP comm bug).
+    # PP traffic is small (~KB per step), so route it over Gloo (TCP) instead.
     _PP = init_model_parallel_group(
-        group_ranks, get_world_group().local_rank, backend, group_name="pp"
+        group_ranks, get_world_group().local_rank, "gloo", group_name="pp"
     )
 
     global _DP

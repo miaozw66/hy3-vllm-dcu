@@ -62,3 +62,9 @@ export NCCL_ALGO=Ring
 export PYTHONUNBUFFERED=1
 export NCCL_IB_DISABLE=1
 export HSA_FORCE_FINE_GRAIN_PCIE=1
+# RPC timeout: first inference triggers torch.compile which can take minutes
+export VLLM_RPC_TIMEOUT=1800000
+# EngineCore→Worker execute_model/sample_tokens timeout (seconds, default 300)
+export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1800
+# NCCL heartbeat timeout: prevent watchdog killing workers during long torch.compile
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600

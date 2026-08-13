@@ -4,6 +4,7 @@
 import functools
 import gc
 import itertools
+import os
 import threading
 import time
 from collections import defaultdict
@@ -3874,7 +3875,14 @@ class GPUModelRunner(
             kv_connector_output = self.kv_connector_output
             self.kv_connector_output = None
             # receive sampled token ids from the last PP rank.
-            if self.use_async_scheduling and get_pp_group().world_size > 1:
+            if (
+                self.use_async_scheduling
+                and get_pp_group().world_size > 1
+                # HY3/DCU: Gloo PP broadcast is a per-step CPU serialization
+                # point. Skipping it falls back to the normal input_ids copy
+                # path (correct without speculative decoding).
+                and not os.environ.get("VLLM_HY3_SKIP_PP_TOKID_BCAST")
+            ):
                 self._pp_receive_prev_sampled_token_ids_to_input_batch()
             if not kv_connector_output:
                 return None  # type: ignore[return-value]
@@ -3921,7 +3929,14 @@ class GPUModelRunner(
             # For torchrun external_launcher PP mode with broadcast_pp_output=True,
             # PP outputs have been broadcasted to all ranks at logits computation.
             # Therefore, here is no need to send sampled token ids again in this case.
-            if not self.broadcast_pp_output and pp.world_size > 1 and pp.is_last_rank:
+            if (
+                not self.broadcast_pp_output
+                and pp.world_size > 1
+                and pp.is_last_rank
+                # HY3/DCU: mirror the receive-side skip so the collective
+                # stays balanced.
+                and not os.environ.get("VLLM_HY3_SKIP_PP_TOKID_BCAST")
+            ):
                 self._pp_broadcast_prev_sampled_token_ids(
                     sampler_output.sampled_token_ids
                 )
