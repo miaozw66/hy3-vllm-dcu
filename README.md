@@ -28,7 +28,7 @@
 | `v1/worker/gpu_worker.py` (~869 行) | `isend_tensor_dict` 前对 `_last_replay_stream.synchronize()` | Gloo D2H 拷贝不等待 stream 事件导致乱码（问题 6） |
 | `v1/worker/gpu_model_runner.py` | 新增 `VLLM_HY3_SKIP_PP_TOKID_BCAST` 开关（仅 sync scheduling 下安全） | 每步 Gloo 广播串行（问题 7） |
 
-> **注意**：`pip install dist/*.whl` 安装的是 wheel 里的代码。上述补丁需要同时打在**运行时安装副本**（`/usr/local/lib/python3.10/dist-packages/vllm/`，node0 宿主机 + node1 Docker 容器各一份）。仓库中的 `vllm/` 目录是同步了同样补丁的源码快照，供参考。
+> **注意**：`dist/` 下的 wheel **已包含上述全部补丁（2026-08-13 重新打包）**，`pip install dist/*.whl` 即可获得 CUDA graph 能力，详见[安装包更新说明](#安装包更新2026-08-13)。若环境是 2026-08-13 之前安装的旧 wheel，需对**运行时安装副本**（`/usr/local/lib/python3.10/dist-packages/vllm/`，node0 宿主机 + node1 Docker 容器各一份）手动打补丁或重装新 wheel。仓库中的 `vllm/` 目录是同步了同样补丁的源码快照，供参考。
 
 ### 3. 新增文件
 
@@ -124,7 +124,41 @@ python3 -u -m vllm.entrypoints.openai.api_server \
 pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
 ```
 
-> **注意**：`pip install` 该 wheel 后，vLLM 即安装完毕，无需再单独安装其他 vLLM 包。仓库中的 `vllm/` 目录是上游源码快照，仅用于代码参考和 HY3 模型文件查阅。**CUDA graph 模式还需要对安装副本打三处补丁**（见文首"源码修改"表）。
+> **注意**：`pip install` 该 wheel 后，vLLM 即安装完毕，无需再单独安装其他 vLLM 包。仓库中的 `vllm/` 目录是上游源码快照，仅用于代码参考和 HY3 模型文件查阅。
+
+#### 安装包更新（2026-08-13）
+
+`dist/` 下的 wheel 已更新为包含 CUDA graph 补丁的版本：
+
+| 版本 | 构建时间 | 内容 |
+|------|---------|------|
+| 旧版 | 2026-08-07 | 仅 HY3 模型层适配（`hy_v3.py` 等），**不含** CUDA graph 补丁 |
+| 新版 | 2026-08-13 | 旧版全部内容 + 4 个 CUDA graph 补丁（Gloo PP 通信、replay stream 同步、tokid 广播开关） |
+
+重新打包方式：CUDA graph 的 4 个补丁全部是纯 Python 文件，C++ 扩展（`_C.abi3.so`、`_moe_C.abi3.so`、`cumem_allocator.abi3.so`）未改动，因此**无需重编译**，解包旧 wheel → 替换 4 个补丁文件 → `wheel pack` 重新打包即可（在仓库根目录执行）：
+
+```bash
+# 1. 解包旧 wheel
+rm -rf /tmp/wheel_repack && mkdir -p /tmp/wheel_repack && cd /tmp/wheel_repack
+unzip -q dist/vllm-0.18.1+das.dtk2604.hy3-*.whl
+
+# 2. 用源码树中打补丁后的 4 个文件覆盖（转 LF 行尾）
+for f in vllm/distributed/parallel_state.py \
+         vllm/compilation/cuda_graph.py \
+         vllm/v1/worker/gpu_worker.py \
+         vllm/v1/worker/gpu_model_runner.py; do
+    tr -d '\r' < ../vllm/$f > $f
+done
+
+# 3. 重新打包（wheel pack 自动重建 RECORD 校验和）
+python3 -m wheel pack . --dest-dir dist/
+
+# 4. 恢复原文件名（wheel pack 按 WHEEL 内 Tag 生成 linux_x86_64 名，改回 manylinux 名）
+cd dist && mv vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-linux_x86_64.whl \
+   vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
+```
+
+> **打包注意事项**：wheel 内有两个 DCU 定制文件必须保留原样，不要用上游源码快照覆盖——`vllm/version.py`（含 `__hcu_version__`，注释掉了上游的 `assert __version_tuple__[0] == 0`）和 `vllm/platforms/rocm.py`（注释掉了 `import vllm._rocm_C`）。补丁后的 4 个文件以 LF 行尾打包，其余文件与旧 wheel 逐字节一致（已校验 RECORD 全部 1986 条 sha256）。
 
 ### 2.3 模型权重
 
@@ -318,7 +352,7 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 3. **克隆仓库**: `git clone -b cuda-graph https://github.com/miaozw66/hy3-vllm-dcu && cd hy3-vllm-dcu`
 4. **编辑配置**: 修改 `deploy/env.sh` 中的 IP、NIC、路径、Docker 容器名
 5. **验证 RCCL**: `python3 tools/test_rccl_single.py`
-6. **打 CUDA graph 补丁**: 按文首"源码修改"表，将三处补丁应用到两端节点的 vLLM 安装副本
+6. **安装 vLLM**: `pip install dist/vllm-0.18.1+das.dtk2604.hy3-*.whl`（2026-08-13 起 wheel 已内置 CUDA graph 补丁，无需再手动打补丁）
 7. **80 层单机 TP=8**: 按 4.1 节命令启动
 8. **80 层双机 PP=2**（推荐，已验证）: `bash deploy/run_pp2_80l.sh`
 
@@ -363,7 +397,7 @@ hy3-vllm-dcu/
 │   ├── CUDA_Graph_问题与修复_完整记录_20260812.md   # ★ CUDA graph 完整排查记录
 │   └── CUDA_Graph_Benchmark_实验报告_20260812.md   # CUDA graph benchmark 实验报告
 ├── outputs/                      # evalscope 运行结果
-├── dist/                         # vLLM wheel 安装包
+├── dist/                         # vLLM wheel 安装包（含 CUDA graph 补丁，2026-08-13 更新）
 ├── upstream/                     # HY3 上游 vLLM 集成改动
 └── vllm/                         # vLLM 0.18.1 源码 snapshot（含 HY3 模型文件 + CUDA graph 补丁）
 ```
@@ -374,5 +408,5 @@ hy3-vllm-dcu/
 2. **NFS 权重加载慢**: 多线程加载 (`enable_multithread_load`) 可缓解
 3. **CUDA graph 上下文限制**: graph 模式 `--max-model-len` 限 8192（32k 会 OOM）；需要更长上下文时用 `--enforce-eager`（退回 main 分支行为）
 4. **单机 TP=8 + CUDA graph 未验证**: 本次验证环境为双机 PP=2 TP=4，单机组合可能遇到未覆盖的问题
-5. **CUDA graph 依赖运行时补丁**: 三处补丁打在安装副本上，重装 vLLM 包或重建容器后需重新应用
+5. **CUDA graph 依赖运行时补丁**: 2026-08-13 起补丁已打包进 `dist/` wheel（旧 wheel 需手动打补丁）；重装 vLLM 包或重建容器后请重新安装 `dist/` 下的新 wheel
 6. **MoE 调优配置**: `configs/moe_configs/` 中的 device_name=KONGMING 仅匹配海光卡；换 GPU 需重新生成
