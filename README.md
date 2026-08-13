@@ -38,6 +38,8 @@
 | `benchmark/cudagraph_results_20260812_021100.json` | enforce-eager 基准结果 |
 | `docs/CUDA_Graph_Benchmark_实验报告_20260812.md` | 6 次部署尝试的完整实验记录 |
 | `docs/CUDA_Graph_问题与修复_完整记录_20260812.md` | 全部问题、根因、修复的完整记录 |
+| `docs/CUDA_Graph_Profiler_分析_20260813_2.md` | torch profiler trace 分析（2026-08-13 第 2 批）：Gloo PP 通信 ~43ms/步为最大瓶颈 |
+| `profiles/torch1_cudagraph_20260813_2/` | torch profiler trace（8 rank `.pt.trace.json.gz` + async_llm + 4 个 `profiler_out_*.txt`），修复后配置采集 |
 
 ### 4. 性能对比（max_model_len=8192，PP=2 TP=4 双机）
 
