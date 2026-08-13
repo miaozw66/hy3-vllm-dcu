@@ -1,6 +1,85 @@
-# vllm-hy3: vLLM Adaptation for Tencent HY3 on Hygon DCU
+# vllm-hy3: vLLM Adaptation for Tencent HY3 on Hygon DCU（cuda-graph 分支）
 
 将 Tencent HY3 大模型（`HYV3ForCausalLM`）的 vLLM 推理框架适配到海光 DCU（K100 / gfx928）平台，支持 TP=4/8 单机推理和 PP=2 双机流水线推理。
+
+**本分支（cuda-graph）**：在 main 分支基础上开启 CUDA graph（`-O1` PIECEWISE 模式），实测输出正确、**12.5 tok/s**（对比 enforce-eager 5.9 tok/s，快 2.2 倍）。配置方法见下文，完整问题排查记录见 [`docs/CUDA_Graph_问题与修复_完整记录_20260812.md`](docs/CUDA_Graph_问题与修复_完整记录_20260812.md)。
+
+---
+
+## 与无 CUDA Graph 版本相比，修改了哪些内容
+
+### 1. 启动参数变化
+
+| 项目 | 无 CUDA graph（main 分支） | CUDA graph（本分支） | 原因 |
+|------|---------------------------|---------------------|------|
+| 编译模式 | `--enforce-eager` | `-O1`（torch.compile + CUDA graph） | 开启 CUDA graph 的入口 |
+| 调度模式 | 默认 async | **`--no-async-scheduling`（必需）** | async 下 PP 采样 token id 的 Gloo 广播每步串行 1.45s（问题 7） |
+| `--max-model-len` | 8192 / 262144 | **8192** | graph 模式多尺寸图变体锁定显存，32k 会 OOM（问题 2） |
+| 分布式超时 | 默认 600s | **`--distributed-timeout-seconds 1800`** | 首次 torch.compile 10-15 分钟超默认超时（问题 3） |
+| RPC / 心跳超时 | 默认 | `VLLM_RPC_TIMEOUT=1800000`、`VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=1800`、`TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=3600`（env.sh） | 防止长时间编译/推理被 watchdog 误杀 |
+| dump 环境变量 | 默认开启 | **移除** | dump hooks 的 `open()` 干扰 graph capture（问题 1） |
+
+### 2. 源码修改（运行时补丁，两端节点都要生效）
+
+| 文件（`vllm/vllm/` 下） | 修改内容 | 解决的问题 |
+|--------------------------|----------|------------|
+| `distributed/parallel_state.py` (~1627 行) | PP group backend 从 NCCL 改为 **Gloo** | RCCL P2P 在 graph replay 下每步 poll 32.6s（问题 5） |
+| `compilation/cuda_graph.py` | 记录最后一次 replay 所在的 stream（`_last_replay_stream`），replay 前后与默认 stream 双向 join | 乱码的 stream 竞争（问题 6） |
+| `v1/worker/gpu_worker.py` (~869 行) | `isend_tensor_dict` 前对 `_last_replay_stream.synchronize()` | Gloo D2H 拷贝不等待 stream 事件导致乱码（问题 6） |
+| `v1/worker/gpu_model_runner.py` | 新增 `VLLM_HY3_SKIP_PP_TOKID_BCAST` 开关（仅 sync scheduling 下安全） | 每步 Gloo 广播串行（问题 7） |
+
+> **注意**：`pip install dist/*.whl` 安装的是 wheel 里的代码。上述补丁需要同时打在**运行时安装副本**（`/usr/local/lib/python3.10/dist-packages/vllm/`，node0 宿主机 + node1 Docker 容器各一份）。仓库中的 `vllm/` 目录是同步了同样补丁的源码快照，供参考。
+
+### 3. 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `benchmark/cudagraph_bench.py` | streaming TTFT/TPOT/吞吐测量脚本 |
+| `benchmark/cudagraph_results_20260812_021100.json` | enforce-eager 基准结果 |
+| `docs/CUDA_Graph_Benchmark_实验报告_20260812.md` | 6 次部署尝试的完整实验记录 |
+| `docs/CUDA_Graph_问题与修复_完整记录_20260812.md` | 全部问题、根因、修复的完整记录 |
+
+### 4. 性能对比（max_model_len=8192，PP=2 TP=4 双机）
+
+| 模式 | 生成速度 | 说明 |
+|------|---------|------|
+| enforce-eager（无 graph） | 5.9 tok/s | 每步 kernel launch 开销大 |
+| CUDA graph 修复前 | 0.1-0.6 tok/s | 三个 bug 叠加（问题 5/6/7） |
+| **CUDA graph 修复后** | **12.5 tok/s** | 首 token 0.12s，每 token 0.08s，并发 4 请求 ~10 tok/s |
+
+---
+
+## CUDA Graph 配置的问题与解决
+
+开启 CUDA graph 过程中共遇到 7 个问题，全部已解决。完整排查过程（含 trace 分析、复现实验、代码补丁）见 [`docs/CUDA_Graph_问题与修复_完整记录_20260812.md`](docs/CUDA_Graph_问题与修复_完整记录_20260812.md)，这里给出摘要：
+
+| # | 问题 | 症状 | 根因 | 修复 |
+|---|------|------|------|------|
+| 1 | 捕获阶段崩溃 | capture 时 worker 崩溃 | dump 环境变量干扰 capture | 移除 dump 变量；需 dump 时用 `--enforce-eager` |
+| 2 | 长上下文 OOM | 32k 上下文显存不足 | graph 多尺寸变体锁定 activation | `--max-model-len 8192` |
+| 3 | 分布式超时 | SEND/RECV 超时崩溃 | 首次编译 10-15 分钟 > 默认 600s | 四重超时全部调大 |
+| 4 | 第二次请求挂起 | 首个请求成功，之后永久挂起 | RCCL P2P bug 表象（每 token 32.6s） | 由问题 5 的修复一并解决 |
+| 5 | **性能退化 50x** | 0.1 tok/s，GPU 空闲，CPU 空转 | **RCCL 2.22.3 P2P 在 graph replay 下两端 kernel 同时 poll 32.6s**（2^15 ms 周期） | **PP group backend 改 Gloo** |
+| 6 | **输出乱码** | 速度正常但输出随机字符 | **Gloo 的 D2H 拷贝不等待 capture stream**（上游 vLLM 在 PP 模式下本就禁用 CUDA graph，stream 同步从未被处理） | **isend 前精确同步 replay stream** |
+| 7 | **每步 1.45s 串行** | 修复后仅 0.65-1.5 tok/s | PP 采样 token id 的 Gloo 广播每步执行（async 下功能必需，不能跳过） | **`--no-async-scheduling`** |
+
+### 最终可用启动参数（双机 PP=2 TP=4）
+
+```bash
+python3 -u -m vllm.entrypoints.openai.api_server \
+  --model /path/to/hy3-model \
+  --pipeline-parallel-size 2 --tensor-parallel-size 4 \
+  --nnodes 2 --node-rank 0 \
+  --master-addr <NODE0_IP> --master-port 29517 \
+  --trust-remote-code --max-model-len 8192 --gpu-memory-utilization 0.90 \
+  --enable-auto-tool-choice --tool-call-parser hy_v3 \
+  --distributed-timeout-seconds 1800 \
+  --no-async-scheduling -O1 --port 8000
+```
+
+（`deploy/run_pp2_80l.sh` 已固化上述参数，直接 `bash deploy/run_pp2_80l.sh` 即可。）
+
+---
 
 ## 1. 模型架构摘要
 
@@ -45,7 +124,7 @@
 pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.manylinux_2_28_x86_64.whl
 ```
 
-> **注意**：`pip install` 该 wheel 后，vLLM 即安装完毕，无需再单独安装其他 vLLM 包。仓库中的 `vllm/` 目录是上游源码快照，仅用于代码参考和 HY3 模型文件查阅。
+> **注意**：`pip install` 该 wheel 后，vLLM 即安装完毕，无需再单独安装其他 vLLM 包。仓库中的 `vllm/` 目录是上游源码快照，仅用于代码参考和 HY3 模型文件查阅。**CUDA graph 模式还需要对安装副本打三处补丁**（见文首"源码修改"表）。
 
 ### 2.3 模型权重
 
@@ -53,11 +132,11 @@ pip install dist/vllm-0.18.1+das.dtk2604.hy3-cp310-cp310-manylinux_2_24_x86_64.m
 
 ## 3. 快速开始
 
-### 3.1 克隆仓库
+### 3.1 克隆仓库（本分支）
 
 ```bash
-git clone https://github.com/miaozw66/hy3-vllm-dcu
-cd vllm-hy3
+git clone -b cuda-graph https://github.com/miaozw66/hy3-vllm-dcu
+cd hy3-vllm-dcu
 ```
 
 ### 3.2 配置机器信息
@@ -87,18 +166,21 @@ python3 tools/test_rccl_single.py
 
 预期输出：`SUCCESS: Single-node RCCL works!`
 
-### 3.4 启动推理服务
+### 3.4 启动推理服务（CUDA graph 模式）
 
 ```bash
 python3 -m vllm.entrypoints.openai.api_server \
   --model /path/to/hy3-model \
   --tensor-parallel-size 8 \
   --trust-remote-code \
-  --enforce-eager \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.85 \
+  --no-async-scheduling \
+  -O1 \
   --port 8000
 ```
+
+> 无 CUDA graph 的对照配置（main 分支）：`--enforce-eager` 替代 `-O1`，无需 `--no-async-scheduling`。**单机 TP=8 + CUDA graph 尚未验证**（本次验证的是双机 PP=2 TP=4），如遇问题请参考完整记录文档排查。
 
 ### 3.5 测试推理
 
@@ -107,7 +189,6 @@ curl -s http://localhost:8000/v1/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"hy3","prompt":"中国的首都是","max_tokens":5}'
 ```
-
 
 ## 4. 部署场景
 
@@ -118,15 +199,16 @@ python3 -m vllm.entrypoints.openai.api_server \
   --model $MODEL_PATH \
   --tensor-parallel-size 8 \
   --trust-remote-code \
-  --enforce-eager \
   --max-model-len 8192 \
   --gpu-memory-utilization 0.85 \
+  --no-async-scheduling \
+  -O1 \
   --port 8000
 ```
 
-如需更长的上下文，逐步增大 `--max-model-len` 并调低 `--gpu-memory-utilization`。
+如需更长的上下文，逐步增大 `--max-model-len` 并调低 `--gpu-memory-utilization`（注意 CUDA graph 模式 32k 会 OOM，见问题 2）。
 
-### 4.2 双机 PP=2（每机 4 卡，完整 80 层）
+### 4.2 双机 PP=2（每机 4 卡，完整 80 层，已验证 CUDA graph）
 
 ```bash
 # 1. 确认 env.sh 中 NODE1_IP、DOCKER_NAME、NIC 配置正确
@@ -185,13 +267,31 @@ MONITOR_NODES='[{"host":"192.168.1.100","type":"local","docker":""},
 python3 tools/monitor_gpu.py 600 10
 ```
 
-### 6.2 NIAH (Needle in a Haystack) 测试
+### 6.2 CUDA Graph Benchmark
+
+```bash
+python3 benchmark/cudagraph_bench.py --endpoint http://localhost:8000 --tokens 50
+```
+
+### 6.3 NIAH (Needle in a Haystack) 测试
 
 ```bash
 python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8192,16384,32768,65536,131072,262144
 ```
 
 ## 7. 故障排查
+
+### CUDA graph 相关问题
+
+按症状查找对应问题编号（详见文首问题总表或完整记录文档）：
+
+| 症状 | 问题编号 | 解决 |
+|------|---------|------|
+| capture 阶段崩溃 | 1 | 移除 dump 环境变量 |
+| 启动后首个请求极慢（~50s/token） | 4 / 5 | 检查 PP group 是否改为 Gloo |
+| 输出乱码但速度正常 | 6 | 检查 isend 前 stream 同步补丁是否两端生效 |
+| 速度仅 ~1 tok/s、CPU 满、GPU 空闲 | 7 | 加 `--no-async-scheduling` |
+| SEND/RECV 超时崩溃 | 3 | 四重超时调大（env.sh） |
 
 ### RCCL 初始化超时
 
@@ -215,11 +315,12 @@ python3 benchmark/niah_test.py --endpoint http://localhost:8000 --lengths 4096,8
 
 1. **确认硬件**: 8 × K100 AI (gfx928), 单卡 64 GiB
 2. **确认软件栈**: DTK 26.04, PyTorch 2.10.0+das, vLLM 0.18.1+das 已安装
-3. **克隆仓库**: `git clone https://github.com/miaozw66/hy3-vllm-dcu && cd vllm-hy3`
+3. **克隆仓库**: `git clone -b cuda-graph https://github.com/miaozw66/hy3-vllm-dcu && cd hy3-vllm-dcu`
 4. **编辑配置**: 修改 `deploy/env.sh` 中的 IP、NIC、路径、Docker 容器名
 5. **验证 RCCL**: `python3 tools/test_rccl_single.py`
-6. **80 层单机 TP=8**: 按 4.1 节命令启动
-7. **80 层双机 PP=2**（如需）: `bash deploy/run_pp2_80l.sh`
+6. **打 CUDA graph 补丁**: 按文首"源码修改"表，将三处补丁应用到两端节点的 vLLM 安装副本
+7. **80 层单机 TP=8**: 按 4.1 节命令启动
+8. **80 层双机 PP=2**（推荐，已验证）: `bash deploy/run_pp2_80l.sh`
 
 ### 配置模板
 
@@ -233,11 +334,11 @@ cp configs/opencode.json.template configs/opencode.json
 ## 9. 项目文件结构
 
 ```
-vllm-hy3/
+hy3-vllm-dcu/
 ├── README.md                     # 本文件
 ├── deploy/
 │   ├── env.sh                    # ★ 集中式机器配置（移植时首先修改此文件）
-│   ├── run_pp2_80l.sh            # 双机 PP=2 启动（dump 模式）
+│   ├── run_pp2_80l.sh            # 双机 PP=2 启动（CUDA graph 模式）
 │   ├── run_pp2_80l_niah.sh       # 双机 PP=2 启动（NIAH 性能测试）
 │   ├── run_debug_pp2.sh          # 双机 PP=2 调试（可变 max-len）
 │   ├── run_pp2_ray_4l.sh         # 单机 PP=2 Ray 调试（4 层子模型）
@@ -254,17 +355,24 @@ vllm-hy3/
 │   ├── monitor_gpu.py            # GPU 利用率监控
 │   └── summarize_doc.py          # 文档总结测试脚本
 ├── benchmark/
+│   ├── cudagraph_bench.py        # CUDA graph streaming 性能测试
+│   ├── cudagraph_results_*.json  # CUDA graph benchmark 结果
 │   ├── niah_test.py              # NIAH 性能测试
 │   └── niah_results_*.json       # NIAH 历史测试结果
+├── docs/
+│   ├── CUDA_Graph_问题与修复_完整记录_20260812.md   # ★ CUDA graph 完整排查记录
+│   └── CUDA_Graph_Benchmark_实验报告_20260812.md   # CUDA graph benchmark 实验报告
 ├── outputs/                      # evalscope 运行结果
 ├── dist/                         # vLLM wheel 安装包
 ├── upstream/                     # HY3 上游 vLLM 集成改动
-└── vllm/                         # vLLM 0.18.1 源码 snapshot（含 HY3 模型文件 + 上游文档）
+└── vllm/                         # vLLM 0.18.1 源码 snapshot（含 HY3 模型文件 + CUDA graph 补丁）
 ```
 
 ## 10. 已知问题与限制
 
 1. **AITER CK kernel 暂未启用**: gfx928 不在上游 `_ON_GFX9` 列表，且 CK kernel 在 gfx928 上无预编译 `.co` 文件，当前部署默认 `VLLM_ROCM_USE_AITER=0`
 2. **NFS 权重加载慢**: 多线程加载 (`enable_multithread_load`) 可缓解
-3. **enforce-eager 禁用 CUDA Graph**: gfx928 上 HIP Graph 尚不稳定，暂时禁用
-4. **MoE 调优配置**: `configs/moe_configs/` 中的 device_name=KONGMING 仅匹配海光卡；换 GPU 需重新生成
+3. **CUDA graph 上下文限制**: graph 模式 `--max-model-len` 限 8192（32k 会 OOM）；需要更长上下文时用 `--enforce-eager`（退回 main 分支行为）
+4. **单机 TP=8 + CUDA graph 未验证**: 本次验证环境为双机 PP=2 TP=4，单机组合可能遇到未覆盖的问题
+5. **CUDA graph 依赖运行时补丁**: 三处补丁打在安装副本上，重装 vLLM 包或重建容器后需重新应用
+6. **MoE 调优配置**: `configs/moe_configs/` 中的 device_name=KONGMING 仅匹配海光卡；换 GPU 需重新生成
