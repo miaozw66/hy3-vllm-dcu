@@ -8,7 +8,7 @@ set -e
 
 source "$(dirname "$0")/env.sh"
 
-export NCCL_SOCKET_IFNAME=$NIC
+# 单机 TP=4 走 PCIe，无需网卡配置
 export NCCL_DEBUG=WARN
 
 LOG=/tmp/vllm_single_tp4_4l_v2.log

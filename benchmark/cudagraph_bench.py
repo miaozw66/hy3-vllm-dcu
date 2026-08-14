@@ -18,6 +18,7 @@ Usage:
 """
 
 import argparse
+import os
 import json
 import sys
 import time
@@ -413,7 +414,10 @@ def main():
     print_summary(all_results, args)
 
     # Save results
-    output_file = args.output or f"/data/mzw/vllm-hy3/benchmark/cudagraph_results_{timestamp}.json"
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    output_file = args.output or os.path.join(
+        script_dir, f"cudagraph_results_{timestamp}.json"
+    )
     with open(output_file, "w") as f:
         json.dump(all_results, f, indent=2, ensure_ascii=False)
     print(f"  Detailed results saved to: {output_file}")

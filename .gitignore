@@ -10,6 +10,7 @@ __pycache__/
 logs/
 dumps/
 *.log
+benchmark/*_results_*.json
 
 # ── Backups and temp ──
 cleanup/

@@ -2,11 +2,13 @@
 """Single-node RCCL test — run on a single node only. No cross-node needed.
 
 Environment variables:
-  RCCL_MASTER_ADDR  — target IP for interface detection (default: 10.18.17.71)
+  RCCL_MASTER_ADDR  — target IP for interface detection (default: 10.16.1.86)
+  RCCL_WORLD_SIZE   — number of GPUs to test (default: 8)
 """
 import os, sys, socket, fcntl, struct
 
-MASTER_ADDR = os.environ.get("RCCL_MASTER_ADDR", "10.18.17.71")
+MASTER_ADDR = os.environ.get("RCCL_MASTER_ADDR", "10.16.1.86")
+WORLD_SIZE = int(os.environ.get("RCCL_WORLD_SIZE", "8"))
 
 
 def main():
@@ -32,7 +34,7 @@ def main():
         except Exception:
             pass
     if iface is None:
-        iface = "eno1"
+        iface = "enp45s0f0np0"
 
     print(f"[SingleNode] iface={iface}, src_ip={src_ip}", flush=True)
 
@@ -46,7 +48,7 @@ def main():
 
     import torch.multiprocessing as mp
     mp.set_start_method("spawn", force=True)
-    mp.spawn(worker_fn, nprocs=4, join=True)
+    mp.spawn(worker_fn, nprocs=WORLD_SIZE, join=True)
     print("[SingleNode] ALL DONE!", flush=True)
 
 
@@ -54,7 +56,7 @@ def worker_fn(local_rank):
     import torch, torch.distributed as dist
 
     global_rank = local_rank
-    world_size = 4
+    world_size = WORLD_SIZE
     print(f"  [G{local_rank}] rank={global_rank} starting...", flush=True)
     torch.cuda.set_device(local_rank)
     gpu = torch.cuda.get_device_name(local_rank)

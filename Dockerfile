@@ -40,8 +40,8 @@ COPY configs/  /workspace/vllm-hy3/configs/
 
 WORKDIR /workspace/vllm-hy3
 
-# 默认单机 TP=8 启动
-# 双机 PP=2 请用：docker exec hy3 bash deploy/run_pp2_80l.sh
+# 默认单机 TP=8 启动（eager）
+# CUDA graph 模式请用：docker exec hy3 bash deploy/run_tp8_single_80l.sh
 CMD ["python3", "-m", "vllm.entrypoints.openai.api_server", \
      "--model", "/model", \
      "--tensor-parallel-size", "8", \

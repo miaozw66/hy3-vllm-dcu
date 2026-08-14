@@ -6,9 +6,9 @@
 
 环境变量:
   MONITOR_NODES  — JSON 格式的节点配置列表，每个节点包含 host, type, docker
-                   例如: [{"host":"10.18.17.71","type":"local","docker":""},
-                          {"host":"10.18.17.74","type":"remote","docker":"mmh_qwen_opt"}]
-                   本地单机默认: [{"host":"localhost","type":"local","docker":""}]
+                   例如: [{"host":"localhost","type":"local","docker":""},
+                          {"host":"10.18.17.74","type":"remote","docker":"some_container"}]
+                   默认: [{"host":"localhost","type":"local","docker":""}]
 """
 import json
 import os
@@ -23,8 +23,7 @@ _NODES_ENV = os.environ.get("MONITOR_NODES")
 if _NODES_ENV:
     NODES = json.loads(_NODES_ENV)
 else:
-    NODES = [{"host": "10.18.17.71", "type": "local", "docker": ""},
-             {"host": "10.18.17.74", "type": "remote", "docker": "mmh_qwen_opt"}]
+    NODES = [{"host": "localhost", "type": "local", "docker": ""}]
 
 
 def sample(node):
