@@ -22,6 +22,11 @@ from vllm.forward_context import (
     is_forward_context_available,
 )
 from vllm.logger import init_logger
+
+# HY3/DCU: 记录最后一次 replay 所在的 stream, 供 PP isend 前精确同步.
+# Gloo 的 D2H 拷贝不等待任何 stream 的事件, 只有 CPU 阻塞同步可靠.
+_last_replay_stream = None
+
 from vllm.model_executor.offloader.base import get_offloader
 from vllm.platforms import current_platform
 from vllm.utils.torch_utils import current_stream, weak_ref_tensors
@@ -189,6 +194,7 @@ class CUDAGraphWrapper:
 
         self.first_run_finished = False
         self.is_debugging_mode = envs.VLLM_LOGGING_LEVEL == "DEBUG"
+        self._capture_stream = None
 
         # assert runtime_mode is not NONE(no cudagraph), otherwise, we don't
         # need to initialize a CUDAGraphWrapper.
@@ -302,10 +308,12 @@ class CUDAGraphWrapper:
                 get_offloader().sync_prev_onload()
 
                 # mind-exploding: carefully manage the reference and memory.
+                capture_stream = current_stream()
+                self._capture_stream = capture_stream
                 with torch.cuda.graph(
                     cudagraph,
                     pool=self.graph_pool,
-                    stream=current_stream(),
+                    stream=capture_stream,
                 ):
                     # `output` is managed by pytorch's cudagraph pool
                     output = self.runnable(*args, **kwargs)
@@ -349,5 +357,23 @@ class CUDAGraphWrapper:
         # Sync offloader before replay - ensures any external dependencies
         # from pre-capture prefetches are satisfied.
         get_offloader().sync_prev_onload()
-        entry.cudagraph.replay()
+
+        # HY3/DCU workaround: PP + cudagraph is not supported upstream, so the
+        # capture stream is never joined with the default stream around replay.
+        # Input copies (H2D) run on the default stream, replay runs on the
+        # capture stream, and consumers (sampling, PP comm D2H) run back on the
+        # default stream. Unsynchronized reads corrupt data. Join both sides.
+        import os as _os2, torch.distributed as _dist2
+        global _last_replay_stream
+        _last_replay_stream = current_stream()
+        if _os2.environ.get("VLLM_HY3_DBG_PTR") and _dist2.is_initialized():
+            _r2 = _dist2.get_rank()
+            with open(f"/tmp/pp_replay_r{_r2}.txt", "a") as _f:
+                _f.write(f"cur={_last_replay_stream.cuda_stream} cap={self._capture_stream.cuda_stream if self._capture_stream is not None else -1}\n")
+        if self._capture_stream is not None:
+            self._capture_stream.wait_stream(torch.cuda.current_stream())
+            entry.cudagraph.replay()
+            torch.cuda.current_stream().wait_stream(self._capture_stream)
+        else:
+            entry.cudagraph.replay()
         return entry.output
