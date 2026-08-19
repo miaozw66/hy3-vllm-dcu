@@ -4,6 +4,7 @@
 import logging
 import os
 from dataclasses import MISSING, Field, asdict, dataclass, field
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -28,6 +29,7 @@ from vllm.config.vllm import (
     OptimizationLevel,
 )
 from vllm.platforms import current_platform
+from vllm.v1.engine.core import _get_batch_queue_size
 
 
 def test_compile_config_repr_succeeds():
@@ -1129,6 +1131,39 @@ def test_needs_dp_coordination(
     vllm_config = VllmConfig(model_config=model_config, parallel_config=parallel_config)
 
     assert vllm_config.needs_dp_coordinator == expected_needs_coordinator
+
+
+def test_mtp_draft_parallel_config_is_rank_local():
+    target = ParallelConfig(pipeline_parallel_size=2, tensor_parallel_size=4)
+
+    mtp_draft = SpeculativeConfig.create_draft_parallel_config(
+        target,
+        speculative_draft_tensor_parallel_size=4,
+        draft_pipeline_parallel_size=1,
+    )
+    default_draft = SpeculativeConfig.create_draft_parallel_config(
+        target,
+        speculative_draft_tensor_parallel_size=4,
+    )
+
+    assert mtp_draft.pipeline_parallel_size == 1
+    assert mtp_draft.tensor_parallel_size == 4
+    assert default_draft.pipeline_parallel_size == 2
+
+
+def test_mtp_pp_disables_batch_queue():
+    def config(method, pp_size):
+        return SimpleNamespace(
+            speculative_config=(
+                None if method is None else SimpleNamespace(method=method)
+            ),
+            parallel_config=SimpleNamespace(pipeline_parallel_size=pp_size),
+        )
+
+    assert _get_batch_queue_size(config("mtp", 2), 3) == 1
+    assert _get_batch_queue_size(config("mtp", 1), 3) == 3
+    assert _get_batch_queue_size(config("eagle", 2), 3) == 3
+    assert _get_batch_queue_size(config(None, 2), 3) == 3
 
 
 def test_eagle_draft_model_config():

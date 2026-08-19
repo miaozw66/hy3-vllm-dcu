@@ -4,6 +4,7 @@
 import functools
 import gc
 import itertools
+import os
 import threading
 import time
 from collections import defaultdict
@@ -499,20 +500,19 @@ class GPUModelRunner(
         self.late_interaction_runner = LateInteractionRunner()
 
         self.use_aux_hidden_state_outputs = False
-        # Set up speculative decoding.
-        # NOTE(Jiayi): currently we put the entire draft model on
-        # the last PP rank. This is not ideal if there are many
-        # layers in the draft model.
+        self.drafter: (
+            NgramProposer  # noqa: F823
+            | NgramProposerGPU
+            | SuffixDecodingProposer
+            | EagleProposer
+            | DraftModelProposer
+            | MedusaProposer
+            | ExtractHiddenStatesProposer
+            | None
+        ) = None
+        self.rejection_sampler: RejectionSampler | None = None
+        # The draft model is rank-local and lives entirely on the last target PP rank.
         if self.speculative_config and get_pp_group().is_last_rank:
-            self.drafter: (
-                NgramProposer  # noqa: F823
-                | NgramProposerGPU
-                | SuffixDecodingProposer
-                | EagleProposer
-                | DraftModelProposer
-                | MedusaProposer
-                | ExtractHiddenStatesProposer
-            )
             if self.speculative_config.method == "ngram":
                 from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 
@@ -1219,6 +1219,12 @@ class GPUModelRunner(
                     # sampled token ids back because there's no direct communication
                     # between the first-stage worker and the last-stage worker.
                     new_token_ids = req_data.new_token_ids[i]
+                # HY3/DCU: with speculative decoding a decode step may schedule
+                # only spec tokens, so `new_token_ids` (the verified tokens
+                # echoed by the scheduler) can be empty for a request even
+                # though its computed token count advanced. Skip appending in
+                # that case instead of indexing an empty list.
+                if new_token_ids:
                     # Add the sampled token(s) from the previous step (if any).
                     # This doesn't include "unverified" tokens like spec tokens.
                     num_new_tokens = (
@@ -1282,7 +1288,7 @@ class GPUModelRunner(
             if not is_last_rank:
                 # Add new_token_ids to token_ids_cpu.
                 start_token_index = num_computed_tokens
-                end_token_index = num_computed_tokens + len(new_token_ids)
+                end_token_index = start_token_index + len(new_token_ids)
                 self.input_batch.token_ids_cpu[
                     req_index, start_token_index:end_token_index
                 ] = new_token_ids
@@ -2086,7 +2092,7 @@ class GPUModelRunner(
                 cm.block_table_tensor = _get_block_table(kv_cache_gid)
                 cm.slot_mapping = slot_mappings[kv_cache_gid]
 
-            if self.speculative_config and spec_decode_common_attn_metadata is None:
+            if self.drafter is not None and spec_decode_common_attn_metadata is None:
                 if isinstance(self.drafter, EagleProposer):
                     if self.drafter.kv_cache_gid == kv_cache_gid:
                         spec_decode_common_attn_metadata = cm
@@ -3105,6 +3111,7 @@ class GPUModelRunner(
             draft_token_ids_cpu, _ = self._get_draft_token_ids_cpu()
             self.input_batch.update_async_spec_token_ids(draft_token_ids_cpu)
 
+        assert self.rejection_sampler is not None
         sampler_output = self.rejection_sampler(
             spec_decode_metadata,
             None,  # draft_probs
@@ -3765,7 +3772,7 @@ class GPUModelRunner(
         # Use persistent buffers for CUDA graphs.
         # When spec decode is enabled, defer connector finalization
         # (wait_for_save + clear metadata) until after draft model runs.
-        defer_kv_connector_finalize = self.speculative_config is not None
+        defer_kv_connector_finalize = self.drafter is not None
         with (
             set_forward_context(
                 attn_metadata,
@@ -3874,7 +3881,14 @@ class GPUModelRunner(
             kv_connector_output = self.kv_connector_output
             self.kv_connector_output = None
             # receive sampled token ids from the last PP rank.
-            if self.use_async_scheduling and get_pp_group().world_size > 1:
+            if (
+                self.use_async_scheduling
+                and get_pp_group().world_size > 1
+                # HY3/DCU: Gloo PP broadcast is a per-step CPU serialization
+                # point. Skipping it falls back to the normal input_ids copy
+                # path (correct without speculative decoding).
+                and not os.environ.get("VLLM_HY3_SKIP_PP_TOKID_BCAST")
+            ):
                 self._pp_receive_prev_sampled_token_ids_to_input_batch()
             if not kv_connector_output:
                 return None  # type: ignore[return-value]
@@ -3912,7 +3926,6 @@ class GPUModelRunner(
 
         with record_function_or_nullcontext("gpu_model_runner: sample"):
             sampler_output = self._sample(logits, spec_decode_metadata)
-
         self._update_states_after_model_execute(
             sampler_output.sampled_token_ids, scheduler_output
         )
@@ -3921,7 +3934,14 @@ class GPUModelRunner(
             # For torchrun external_launcher PP mode with broadcast_pp_output=True,
             # PP outputs have been broadcasted to all ranks at logits computation.
             # Therefore, here is no need to send sampled token ids again in this case.
-            if not self.broadcast_pp_output and pp.world_size > 1 and pp.is_last_rank:
+            if (
+                not self.broadcast_pp_output
+                and pp.world_size > 1
+                and pp.is_last_rank
+                # HY3/DCU: mirror the receive-side skip so the collective
+                # stays balanced.
+                and not os.environ.get("VLLM_HY3_SKIP_PP_TOKID_BCAST")
+            ):
                 self._pp_broadcast_prev_sampled_token_ids(
                     sampler_output.sampled_token_ids
                 )
@@ -3948,7 +3968,8 @@ class GPUModelRunner(
 
         spec_config = self.speculative_config
         propose_drafts_after_bookkeeping = False
-        if spec_config is not None:
+        if self.drafter is not None:
+            assert spec_config is not None
             input_fits_in_drafter = spec_decode_common_attn_metadata is not None and (
                 spec_decode_common_attn_metadata.max_seq_len + self.num_spec_tokens
                 <= self.effective_drafter_max_model_len
@@ -4043,7 +4064,7 @@ class GPUModelRunner(
         # Finalize KV connector (wait_for_save + clear metadata) after
         # draft model runs. Deferred from target model forward to allow
         # draft model to also save its KV cache.
-        if spec_config is not None:
+        if self.drafter is not None:
             self.finalize_kv_connector()
 
         with record_function_or_nullcontext("gpu_model_runner: eplb"):
@@ -4236,6 +4257,7 @@ class GPUModelRunner(
         num_scheduled_tokens = scheduler_output.total_num_scheduled_tokens
         spec_config = self.speculative_config
         assert spec_config is not None
+        assert self.drafter is not None
         if spec_config.method == "ngram":
             from vllm.v1.spec_decode.ngram_proposer import NgramProposer
 
@@ -4501,7 +4523,7 @@ class GPUModelRunner(
                     self.model = self.load_lora_model(
                         self.model, self.vllm_config, self.device
                     )
-                if hasattr(self, "drafter"):
+                if self.drafter is not None:
                     logger.info_once("Loading drafter model...")
                     self.drafter.load_model(self.model)
                     if (
@@ -4571,7 +4593,7 @@ class GPUModelRunner(
         )
         if not load_dummy_weights:
             prepare_communication_buffer_for_model(self.model)
-            if (drafter := getattr(self, "drafter", None)) and (
+            if (drafter := self.drafter) is not None and (
                 drafter_model := getattr(drafter, "model", None)
             ):
                 prepare_communication_buffer_for_model(drafter_model)
@@ -5135,7 +5157,7 @@ class GPUModelRunner(
                     ubatch_slices=(ubatch_slices_padded if pad_attn else ubatch_slices),
                     for_cudagraph_capture=is_graph_capturing,
                     slot_mappings=slot_mappings_by_group,
-                    use_spec_decode=self.speculative_config is not None,
+                    use_spec_decode=self.drafter is not None,
                 )
 
         with self.maybe_dummy_run_with_lora(
@@ -5220,10 +5242,14 @@ class GPUModelRunner(
             else:
                 hidden_states = outputs
 
-            if self.speculative_config and (
-                self.speculative_config.use_eagle()
-                or self.speculative_config.uses_draft_model()
-                or self.speculative_config.uses_extract_hidden_states()
+            if (
+                self.drafter is not None
+                and self.speculative_config is not None
+                and (
+                    self.speculative_config.use_eagle()
+                    or self.speculative_config.uses_draft_model()
+                    or self.speculative_config.uses_extract_hidden_states()
+                )
             ):
                 assert isinstance(
                     self.drafter,
@@ -5342,7 +5368,7 @@ class GPUModelRunner(
                 ) from e
             else:
                 raise e
-        if self.speculative_config:
+        if self.rejection_sampler is not None:
             draft_token_ids = [[0] for _ in range(num_reqs)]
             dummy_spec_decode_metadata = SpecDecodeMetadata.make_dummy(
                 draft_token_ids, self.device
@@ -5939,12 +5965,8 @@ class GPUModelRunner(
         # because some of them change the threshold at init time.
         self.calculate_reorder_batch_threshold()
 
-        # Initialize drafter attention backend
-        if self.speculative_config and (
-            self.speculative_config.use_eagle()
-            or self.speculative_config.uses_draft_model()
-        ):
-            assert isinstance(self.drafter, EagleProposer | DraftModelProposer)
+        # Initialize drafter attention backend on its owning PP rank.
+        if isinstance(self.drafter, EagleProposer | DraftModelProposer):
             self.drafter.initialize_attn_backend(kv_cache_config, kernel_block_sizes)
 
     def _check_and_update_cudagraph_mode(
@@ -6114,12 +6136,8 @@ class GPUModelRunner(
             cudagraph_mode, self.uniform_decode_query_len
         )
 
-        # Initialize drafter's cudagraph dispatcher if using spec decode.
-        if self.speculative_config and (
-            self.speculative_config.use_eagle()
-            or self.speculative_config.uses_extract_hidden_states()
-        ):
-            assert isinstance(self.drafter, EagleProposer | ExtractHiddenStatesProposer)
+        # Initialize the drafter's cudagraph dispatcher on its owning PP rank.
+        if isinstance(self.drafter, EagleProposer | ExtractHiddenStatesProposer):
             self.drafter.initialize_cudagraph_keys(cudagraph_mode)
 
     def calculate_reorder_batch_threshold(self) -> None:
@@ -6498,13 +6516,8 @@ class GPUModelRunner(
             kv_cache_config, kernel_block_sizes
         )
 
-        if (
-            self.speculative_config
-            and self.speculative_config.uses_extract_hidden_states()
-        ):
-            assert isinstance(self.drafter, ExtractHiddenStatesProposer)
-            # validate all draft model layers belong to the same kv cache
-            # group
+        if isinstance(self.drafter, ExtractHiddenStatesProposer):
+            # Validate that all draft model layers belong to the same KV cache group.
             self.drafter.validate_same_kv_cache_group(kv_cache_config)
 
         if has_kv_transfer_group():

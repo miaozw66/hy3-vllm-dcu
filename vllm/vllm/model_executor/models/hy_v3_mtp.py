@@ -126,8 +126,6 @@ class HYV3MultiTokenPredictorLayer(nn.Module):
         hidden_states = self.eh_proj(
             torch.cat([inputs_embeds, previous_hidden_states], dim=-1)
         )
-
-        # HYV3DecoderLayer returns (hidden_states, residual)
         hidden_states, residual = self.mtp_block(
             positions=positions, hidden_states=hidden_states, residual=None
         )

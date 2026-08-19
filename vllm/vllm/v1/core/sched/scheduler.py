@@ -1054,12 +1054,10 @@ class Scheduler(SchedulerInterface):
                 # stage worker and the last-stage worker. Otherwise, we don't
                 # need to send the sampled tokens back because the model runner
                 # will cache them.
-                num_tokens = num_scheduled_tokens[req_id] - len(
-                    spec_decode_tokens.get(req_id, ())
-                )
-                token_ids = req.all_token_ids[
-                    req.num_computed_tokens : req.num_computed_tokens + num_tokens
-                ]
+                spec_tokens = spec_decode_tokens.get(req_id, ())
+                num_tokens = num_scheduled_tokens[req_id] - len(spec_tokens)
+                start = req.num_computed_tokens
+                token_ids = req.all_token_ids[start : start + num_tokens]
                 new_token_ids.append(token_ids)
             scheduled_in_prev_step = req_id in self.prev_step_scheduled_req_ids
             if idx >= num_running_reqs:
@@ -1338,8 +1336,10 @@ class Scheduler(SchedulerInterface):
             scheduled_spec_token_ids = (
                 scheduler_output.scheduled_spec_decode_tokens.get(req_id)
             )
+            num_draft_tokens = (
+                len(scheduled_spec_token_ids) if scheduled_spec_token_ids else 0
+            )
             if scheduled_spec_token_ids and generated_token_ids:
-                num_draft_tokens = len(scheduled_spec_token_ids)
                 num_accepted = len(generated_token_ids) - 1
                 num_rejected = num_draft_tokens - num_accepted
                 # num_computed_tokens represents the number of tokens

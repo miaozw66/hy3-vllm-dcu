@@ -380,7 +380,8 @@ class SpecDecodeBaseProposer:
         """Greedy-sample draft tokens from hidden states."""
         if self.use_local_argmax_reduction:
             return self.model.get_top_tokens(hidden_states)
-        return self.model.compute_logits(hidden_states).argmax(dim=-1)
+        logits = self.model.compute_logits(hidden_states)
+        return logits.argmax(dim=-1)
 
     def propose(
         self,
@@ -836,10 +837,14 @@ class SpecDecodeBaseProposer:
         """
         # Precompute get_token_id for when there is no valid next token
         num_reqs = gpu_input_batch.num_reqs
+        # HY3/DCU fix: seq_lens_cpu includes speculative/draft positions,
+        # which makes get_token_id() go out of range (returns -1) for
+        # requests with draft tokens. The backup token must be the last
+        # real token, indexed by num_tokens_no_spec - 1 (matches upstream).
         self.backup_next_token_ids.np[:num_reqs] = np.array(
             [
                 requests[gpu_input_batch.req_ids[i]].get_token_id(
-                    common_attn_metadata.seq_lens_cpu[i].item()
+                    int(gpu_input_batch.num_tokens_no_spec[i]) - 1
                 )
                 for i in range(num_reqs)
             ],

@@ -4,6 +4,7 @@
 
 import gc
 import os
+import time
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from datetime import timedelta
@@ -43,6 +44,13 @@ from vllm.platforms import current_platform
 from vllm.profiler.wrapper import CudaProfilerWrapper, TorchProfilerWrapper
 from vllm.sequence import IntermediateTensors
 from vllm.tasks import SupportedTask
+
+
+def _dbg_step(rank: int, tag: str) -> None:
+    """HY3/DCU: per-step timestamp dump for PP pipeline analysis."""
+    if os.environ.get("VLLM_HY3_DBG_PTR"):
+        with open(f"/tmp/pp_step_r{rank}.txt", "a") as _f:
+            _f.write(f"{time.monotonic():.3f} {tag}\n")
 from vllm.tracing import instrument
 from vllm.utils.mem_constants import GiB_bytes
 from vllm.utils.mem_utils import MemorySnapshot, format_gib, memory_profiling
@@ -763,10 +771,12 @@ class Worker(WorkerBase):
         self, scheduler_output: "SchedulerOutput"
     ) -> ModelRunnerOutput | AsyncModelRunnerOutput | None:
         # ensure any previous non-blocking PP sends are complete
+        _dbg_step(self.rank, "begin")
         if self._pp_send_work:
             for handle in self._pp_send_work:
                 handle.wait()
             self._pp_send_work = []
+        _dbg_step(self.rank, "after_wait")
 
         intermediate_tensors = None
         forward_pass = scheduler_output.total_num_scheduled_tokens > 0
@@ -811,12 +821,19 @@ class Worker(WorkerBase):
                     all_gather_tensors=all_gather_tensors,
                 )
             )
+            import os as _os
+            if _os.environ.get("VLLM_HY3_DBG_PTR"):
+                with open(f"/tmp/pp_ptr_irecv_r{self.rank}.txt", "a") as _f:
+                    for _k, _v in tensor_dict.items():
+                        if isinstance(_v, torch.Tensor):
+                            _f.write(f"{_k} {_v.data_ptr()} {tuple(_v.shape)}\n")
             assert tensor_dict is not None
             intermediate_tensors = AsyncIntermediateTensors(
                 tensor_dict,
                 comm_handles=comm_handles,
                 comm_postprocess=comm_postprocess,
             )
+            _dbg_step(self.rank, "after_irecv")
 
         with self.annotate_profile(scheduler_output):
             output = self.model_runner.execute_model(
@@ -834,6 +851,7 @@ class Worker(WorkerBase):
                 return output
 
         assert isinstance(output, IntermediateTensors)
+        _dbg_step(self.rank, "after_forward")
         parallel_config = self.vllm_config.parallel_config
         assert (
             parallel_config.distributed_executor_backend != "external_launcher"
@@ -841,11 +859,35 @@ class Worker(WorkerBase):
         )
 
         # launch non-blocking send of intermediate tensors
+        import os as _os
+        if _os.environ.get("VLLM_HY3_DBG_PTR"):
+            with open(f"/tmp/pp_ptr_isend_r{self.rank}.txt", "a") as _f:
+                for _k, _v in output.tensors.items():
+                    if isinstance(_v, torch.Tensor):
+                        _f.write(f"{_k} {_v.data_ptr()} {tuple(_v.shape)}\n")
+        # HY3/DCU: Gloo 的 D2H 拷贝不等待任何 stream 的事件, 只有 CPU 阻塞同步可靠.
+        # 只等最后一次 replay 的 stream, 避免整机 synchronize 破坏流水线.
+        from vllm.utils.torch_utils import current_stream as _cs3
+        import vllm.compilation.cuda_graph as _cg
+        _lrs = _cg._last_replay_stream
+        if _os.environ.get("VLLM_HY3_DBG_PTR"):
+            with open(f"/tmp/pp_isend_stream_r{self.rank}.txt", "a") as _f:
+                _f.write(f"torch={torch.cuda.current_stream().cuda_stream} vllm={_cs3().cuda_stream} last_replay={_lrs.cuda_stream if _lrs is not None else -1}\n")
+        if _lrs is not None:
+            _lrs.synchronize()
+        else:
+            # HY3/DCU: -O0 has no CUDA graph replay stream; the forward runs on
+            # the current stream but Gloo's D2H copy waits on no stream event.
+            # Synchronize here or the send reads an unfinished forward output
+            # (intermittent garbage tokens / NaN logits in speculative decode).
+            torch.cuda.current_stream().synchronize()
+        _dbg_step(self.rank, "before_isend")
         self._pp_send_work = get_pp_group().isend_tensor_dict(
             output.tensors,
             all_gather_group=get_tp_group(),
             all_gather_tensors=all_gather_tensors,
         )
+        _dbg_step(self.rank, "after_isend")
 
         return None
 

@@ -41,6 +41,11 @@ configs/opencode.json
 
 # ── Web UI artifacts ──
 web/
+!web/
+web/*
+!web/web/
+web/web/*
+!web/web/web_server.py
 
 # ── IDE / editor ──
 .idea/

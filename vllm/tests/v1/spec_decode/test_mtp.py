@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from contextlib import nullcontext
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -22,6 +24,7 @@ from vllm.config import (
     VllmConfig,
 )
 from vllm.config.load import LoadConfig
+from vllm.model_executor.models.hy_v3_mtp import HYV3MultiTokenPredictorLayer
 from vllm.model_executor.models.llama import LlamaForCausalLM
 from vllm.platforms import current_platform
 from vllm.v1.attention.backends.registry import AttentionBackendEnum
@@ -58,6 +61,105 @@ def _create_mtp_proposer(num_speculative_tokens: int) -> EagleProposer:
     )
 
     return EagleProposer(vllm_config=vllm_config, device=current_platform.device_type)
+
+
+def test_hyv3_mtp_uses_raw_residual_before_final_norm():
+    mlp_output = torch.tensor([[1.0, 2.0], [3.0, 4.0]])
+    residual = torch.tensor([[10.0, 20.0], [30.0, 40.0]])
+    mtp_block = mock.MagicMock(return_value=(mlp_output, residual))
+    final_layernorm = mock.MagicMock(side_effect=lambda value: value)
+    layer = SimpleNamespace(
+        enorm=lambda value: value,
+        hnorm=lambda value: value,
+        eh_proj=lambda value: value[:, :2],
+        mtp_block=mtp_block,
+        final_layernorm=final_layernorm,
+    )
+
+    result = HYV3MultiTokenPredictorLayer.forward(
+        layer,
+        input_ids=torch.tensor([1, 2]),
+        positions=torch.tensor([1, 2]),
+        previous_hidden_states=torch.zeros(2, 2),
+        inputs_embeds=torch.ones(2, 2),
+    )
+
+    expected = residual + mlp_output
+    assert torch.equal(result, expected)
+    final_layernorm.assert_called_once()
+    assert torch.equal(final_layernorm.call_args.args[0], expected)
+
+
+def test_mtp_single_token_returns_before_multi_token_path():
+    batch_size = 2
+    num_tokens = 4
+    sample_indices = torch.tensor([1, 3])
+    last_hidden_states = torch.arange(num_tokens * 2, dtype=torch.float32).view(
+        num_tokens, 2
+    )
+    common_attn_metadata = SimpleNamespace(
+        batch_size=lambda: batch_size,
+        slot_mapping=torch.zeros(num_tokens, dtype=torch.int64),
+    )
+    metadata_builder = mock.MagicMock()
+    metadata_builder.build_for_drafting.return_value = object()
+    attn_group = SimpleNamespace(
+        get_metadata_builder=lambda: metadata_builder,
+        layer_names=["mtp_layer"],
+    )
+    determine_batch = mock.MagicMock(return_value=(None, num_tokens, num_tokens))
+    greedy_sample = mock.MagicMock(return_value=torch.tensor([41, 42]))
+    model = mock.MagicMock(return_value=last_hidden_states)
+    proposer = SimpleNamespace(
+        method="mtp",
+        set_inputs_first_pass=lambda **_: (
+            num_tokens,
+            sample_indices,
+            common_attn_metadata,
+        ),
+        runner=object(),
+        draft_attn_groups=[attn_group],
+        _determine_batch_execution_and_padding=determine_batch,
+        supports_mm_inputs=False,
+        input_ids=torch.arange(num_tokens),
+        _get_positions=lambda count: torch.arange(count),
+        pass_hidden_states_to_model=False,
+        vllm_config=object(),
+        _get_slot_mapping=lambda *_: {},
+        model=model,
+        model_returns_tuple=lambda: False,
+        num_speculative_tokens=1,
+        parallel_drafting=False,
+        _greedy_sample=greedy_sample,
+        uses_mrope=False,
+        positions=torch.arange(num_tokens),
+        allowed_attn_types=None,
+        arange=torch.arange(batch_size + 1, dtype=torch.int32),
+        token_arange_np=torch.arange(batch_size + 1, dtype=torch.int32).numpy(),
+        block_size=16,
+    )
+
+    with mock.patch(
+        "vllm.v1.spec_decode.eagle.set_forward_context", return_value=nullcontext()
+    ):
+        result = EagleProposer.propose(
+            proposer,
+            target_token_ids=torch.tensor([10, 11, 12, 13]),
+            target_positions=torch.arange(num_tokens),
+            target_hidden_states=last_hidden_states,
+            next_token_ids=torch.tensor([20, 21]),
+            token_indices_to_sample=None,
+            common_attn_metadata=common_attn_metadata,
+            sampling_metadata=mock.MagicMock(),
+        )
+
+    assert torch.equal(result, torch.tensor([[41], [42]]))
+    model.assert_called_once()
+    determine_batch.assert_called_once_with(num_tokens)
+    greedy_sample.assert_called_once()
+    assert torch.equal(
+        greedy_sample.call_args.args[0], last_hidden_states[sample_indices]
+    )
 
 
 @mock.patch("vllm.v1.spec_decode.eagle.get_pp_group")

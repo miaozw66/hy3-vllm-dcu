@@ -82,6 +82,19 @@ HANDSHAKE_TIMEOUT_MINS = 60
 _R = TypeVar("_R")  # Return type for collective_rpc
 
 
+def _get_batch_queue_size(
+    vllm_config: VllmConfig, max_concurrent_batches: int
+) -> int:
+    speculative_config = vllm_config.speculative_config
+    if (
+        speculative_config is not None
+        and speculative_config.method == "mtp"
+        and vllm_config.parallel_config.pipeline_parallel_size > 1
+    ):
+        return 1
+    return max_concurrent_batches
+
+
 class EngineCore:
     """Inner loop of vLLM's Engine."""
 
@@ -180,7 +193,9 @@ class EngineCore:
         # Batch queue for scheduled batches. This enables us to asynchronously
         # schedule and execute batches, and is required by pipeline parallelism
         # to eliminate pipeline bubbles.
-        self.batch_queue_size = self.model_executor.max_concurrent_batches
+        self.batch_queue_size = _get_batch_queue_size(
+            vllm_config, self.model_executor.max_concurrent_batches
+        )
         self.batch_queue: (
             deque[tuple[Future[ModelRunnerOutput], SchedulerOutput, Future[Any]]] | None
         ) = None

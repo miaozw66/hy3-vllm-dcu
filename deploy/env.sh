@@ -62,3 +62,12 @@ export NCCL_ALGO=Ring
 export PYTHONUNBUFFERED=1
 export NCCL_IB_DISABLE=1
 export HSA_FORCE_FINE_GRAIN_PCIE=1
+# RPC timeout: first inference and rank-local MTP loading can take over 30 minutes
+# on NFS. Milliseconds.
+export VLLM_RPC_TIMEOUT=7200000
+# EngineCore→Worker execute_model/sample_tokens timeout in seconds.
+export VLLM_EXECUTE_MODEL_TIMEOUT_SECONDS=7200
+# Distributed collective timeout used by both node launch commands, in seconds.
+export DISTRIBUTED_TIMEOUT_SECONDS=7200
+# NCCL heartbeat must exceed the longest model-loading collective.
+export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=10800

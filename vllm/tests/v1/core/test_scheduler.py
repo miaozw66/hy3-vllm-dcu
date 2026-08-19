@@ -142,6 +142,34 @@ def test_async_scheduling_pp_allows_rescheduling_with_output_placeholders():
     assert req.request_id in output.num_scheduled_tokens
 
 
+def test_pp_spec_echo_starts_at_num_computed_tokens():
+    scheduler = Mock()
+    scheduler.use_pp = True
+    scheduler.scheduler_config.async_scheduling = False
+    scheduler.prev_step_scheduled_req_ids = {"req"}
+
+    request = Mock()
+    request.request_id = "req"
+    request.num_computed_tokens = 3
+    request.all_token_ids = [10951, 1795, 3077, 5002]
+    request.num_output_tokens = 1
+    request.num_output_placeholders = 0
+
+    blocks = Mock()
+    blocks.get_block_ids.return_value = None
+    cached = Scheduler._make_cached_request_data(
+        scheduler,
+        running_reqs=[request],
+        resumed_reqs=[],
+        num_scheduled_tokens={"req": 2},
+        spec_decode_tokens={"req": [292]},
+        req_to_new_blocks={"req": blocks},
+    )
+
+    assert cached.new_token_ids == [[5002]]
+    assert cached.num_computed_tokens == [3]
+
+
 def test_schedule_partial_requests():
     """Test scheduling behavior with partial requests.
 

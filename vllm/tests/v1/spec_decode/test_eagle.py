@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -427,6 +428,59 @@ def test_set_inputs_first_pass_default_eagle():
 
     # Verify hidden states are copied as-is
     assert torch.equal(proposer.hidden_states[:num_tokens], target_hidden_states)
+
+
+def test_set_inputs_first_pass_mtp():
+    target_token_ids = torch.tensor([10, 11, 12, 20, 21], dtype=torch.int32)
+    target_positions = torch.tensor([0, 1, 2, 0, 1], dtype=torch.int64)
+    target_hidden_states = torch.arange(15, dtype=torch.float32).view(5, 3)
+    next_token_ids = torch.tensor([100, 200], dtype=torch.int32)
+    cad = SimpleNamespace(query_start_loc=torch.tensor([0, 3, 5], dtype=torch.int32))
+    set_positions = mock.MagicMock()
+    proposer = SimpleNamespace(
+        needs_extra_input_slots=False,
+        method="mtp",
+        input_ids=torch.full((5,), -1, dtype=torch.int32),
+        _set_positions=set_positions,
+        hidden_states=torch.zeros_like(target_hidden_states),
+        uses_xdrope_dim=0,
+        draft_uses_xdrope_dim=0,
+    )
+
+    num_tokens, token_indices_to_sample, output_cad = (
+        EagleProposer.set_inputs_first_pass(
+            proposer,
+            target_token_ids=target_token_ids,
+            next_token_ids=next_token_ids,
+            target_positions=target_positions,
+            target_hidden_states=target_hidden_states,
+            token_indices_to_sample=None,
+            cad=cad,
+            num_rejected_tokens_gpu=None,
+        )
+    )
+
+    assert num_tokens == 5
+    assert output_cad is cad
+    assert torch.equal(
+        proposer.input_ids, torch.tensor([11, 12, 100, 21, 200], dtype=torch.int32)
+    )
+    assert torch.equal(token_indices_to_sample, torch.tensor([2, 4], dtype=torch.int32))
+    set_positions.assert_called_once_with(num_tokens, target_positions)
+    assert torch.equal(proposer.hidden_states, target_hidden_states)
+
+    supplied_indices = torch.tensor([1, 3], dtype=torch.int32)
+    _, token_indices_to_sample, _ = EagleProposer.set_inputs_first_pass(
+        proposer,
+        target_token_ids=target_token_ids,
+        next_token_ids=next_token_ids,
+        target_positions=target_positions,
+        target_hidden_states=target_hidden_states,
+        token_indices_to_sample=supplied_indices,
+        cad=cad,
+        num_rejected_tokens_gpu=None,
+    )
+    assert torch.equal(token_indices_to_sample, supplied_indices)
 
 
 def test_set_inputs_first_pass_draft_model():
