@@ -402,6 +402,20 @@ class GPUModelRunner(
         self.parallel_config = vllm_config.parallel_config
         self.scheduler_config = vllm_config.scheduler_config
         self.speculative_config = vllm_config.speculative_config
+        # HY3/DCU MTP fix: zero the KV cache slots of draft tokens rejected
+        # in the previous step. With aiter attention (which reads the cache
+        # before writing), stale rejected-draft KV would otherwise corrupt the
+        # verification logits vs the non-speculative baseline. Disable with
+        # VLLM_HY3_ZERO_REJECTED_KV=0 (e.g. to A/B the fix).
+        zero_rejected_kv = os.environ.get("VLLM_HY3_ZERO_REJECTED_KV", "1")
+        self.zero_rejected_kv = (
+            self.speculative_config is not None
+            and (
+                self.speculative_config.use_eagle()
+                or self.speculative_config.uses_draft_model()
+            )
+            and zero_rejected_kv.lower() not in ("0", "false", "no", "off")
+        )
         self.observability_config = vllm_config.observability_config
 
         model_config = self.model_config
@@ -1207,6 +1221,41 @@ class GPUModelRunner(
                     if is_ngram_gpu and num_accepted > 0 and req_index is not None:
                         self.input_batch.num_tokens_no_spec[req_index] += num_accepted
 
+            # HY3/DCU MTP fix: record how many draft-token KV slots from the
+            # previous step were rejected, so _prepare_inputs can zero them
+            # (they are the head slots of the current segment). The number of
+            # valid tokens of the previous step is read from the GPU counts
+            # array (async scheduling) or from the output-token delta (sync
+            # scheduling, where the counts mechanism is not initialized).
+            if self.zero_rejected_kv:
+                num_rejected_kv_slots = 0
+                if (
+                    req_state.prev_num_draft_len
+                    and req_index is not None
+                    and not resumed_from_preemption
+                ):
+                    if self.use_async_scheduling:
+                        prev_req_row = self.input_batch.prev_req_id_to_index
+                        if (
+                            prev_req_row is not None
+                            and (prev_req_index := prev_req_row.get(req_id))
+                            is not None
+                            and prev_req_index < len(valid_sampled_token_count)
+                        ):
+                            valid_count = valid_sampled_token_count[prev_req_index]
+                        else:
+                            valid_count = None
+                    elif num_output_tokens == len(req_state.output_token_ids):
+                        valid_count = len(req_state.output_token_ids) - num_output_tokens
+                    else:
+                        valid_count = None
+                    if valid_count is not None:
+                        num_rejected_kv_slots = min(
+                            req_state.prev_num_draft_len,
+                            max(0, req_state.prev_num_draft_len + 1 - valid_count),
+                        )
+                req_state.num_rejected_kv_slots = num_rejected_kv_slots
+
             # Update the cached states.
             req_state.num_computed_tokens = num_computed_tokens
 
@@ -1786,6 +1835,13 @@ class GPUModelRunner(
         self.input_batch.block_table.compute_slot_mapping(req_indices, positions_np)
         self.input_batch.block_table.commit_slot_mapping(total_num_scheduled_tokens)
 
+        # HY3/DCU MTP fix: zero the KV slots of drafts rejected in the
+        # previous step. With aiter attention (read cache, write after), the
+        # stale values would corrupt verification/bonus logits vs the baseline
+        # (which reads zeros at those slots).
+        if self.zero_rejected_kv:
+            self._zero_rejected_kv_slots(num_reqs, num_scheduled_tokens, cu_num_tokens)
+
         # Prepare the attention metadata.
         self.query_start_loc.np[0] = 0
         self.query_start_loc.np[1 : num_reqs + 1] = cu_num_tokens
@@ -1888,6 +1944,70 @@ class GPUModelRunner(
             logits_indices,
             spec_decode_metadata,
         )
+
+    def _zero_rejected_kv_slots(
+        self,
+        num_reqs: int,
+        num_scheduled_tokens: np.ndarray,
+        cu_num_tokens: np.ndarray,
+    ) -> None:
+        """Zero KV cache slots of draft tokens rejected in the previous step.
+
+        The rejected drafts' slots are the first ``num_rejected`` slots of each
+        request's current segment: after a rejection the segment starts at the
+        first rejected draft position, whose KV is re-computed this step from
+        the verified token. With aiter attention (read cache, write after),
+        zeroing makes the verification logits exactly match the non-speculative
+        baseline, which reads zeros at unwritten slots.
+
+        Only the main model's KV cache is touched; the MTP draft layer handles
+        its own rejections by shrinking its seq_lens, so its stale slots are
+        never read.
+        """
+        skip_kv_cache_gids: set[int] = set()
+        if isinstance(self.drafter, EagleProposer | DraftModelProposer):
+            skip_kv_cache_gids.add(self.drafter.kv_cache_gid)
+
+        slot_ids: list[int] = []
+        for req_idx in range(num_reqs):
+            req_id = self.input_batch.req_ids[req_idx]
+            num_rejected = min(
+                self.requests[req_id].num_rejected_kv_slots,
+                int(num_scheduled_tokens[req_idx]),
+            )
+            if num_rejected > 0:
+                start = int(cu_num_tokens[req_idx])
+                slot_ids.extend(
+                    self.input_batch.block_table.slot_mapping.np[
+                        start : start + num_rejected
+                    ].tolist()
+                )
+        # Filter out not-local slots (-1, possible with context parallelism).
+        slot_ids = [s for s in slot_ids if s >= 0]
+        if not slot_ids:
+            return
+
+        slot_t = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
+        for kv_cache_gid, attn_groups in enumerate(self.attn_groups):
+            if kv_cache_gid in skip_kv_cache_gids:
+                continue
+            for attn_group in attn_groups:
+                for layer_name in attn_group.layer_names:
+                    kv_cache = self.kv_caches_by_name[layer_name]
+                    if kv_cache.shape[0] == 2:
+                        kv_tensors = (kv_cache[0], kv_cache[1])
+                    elif kv_cache.shape[1] == 2:
+                        kv_tensors = (kv_cache[:, 0], kv_cache[:, 1])
+                    else:
+                        # Unknown layout: skip rather than corrupt the cache.
+                        continue
+                    # The slot ids are linear over the logical slot space, so
+                    # they map onto the (kernel) block/offset dims directly.
+                    block_size = kv_cache.shape[2]
+                    block_ids = slot_t // block_size
+                    offsets = slot_t % block_size
+                    for cache in kv_tensors:
+                        cache[block_ids, offsets] = 0
 
     def _build_attention_metadata(
         self,
@@ -6444,6 +6564,9 @@ class GPUModelRunner(
         for layer_name, target_layer_name in self.shared_kv_cache_layers.items():
             logger.debug("%s reuses KV cache of %s", layer_name, target_layer_name)
             kv_caches[layer_name] = kv_caches[target_layer_name]
+
+        # Keep a layer-name -> tensor map for the rejected-draft KV zeroing.
+        self.kv_caches_by_name = kv_caches
 
         num_attn_module = (
             2 if self.model_config.hf_config.model_type == "longcat_flash" else 1
