@@ -1221,41 +1221,6 @@ class GPUModelRunner(
                     if is_ngram_gpu and num_accepted > 0 and req_index is not None:
                         self.input_batch.num_tokens_no_spec[req_index] += num_accepted
 
-            # HY3/DCU MTP fix: record how many draft-token KV slots from the
-            # previous step were rejected, so _prepare_inputs can zero them
-            # (they are the head slots of the current segment). The number of
-            # valid tokens of the previous step is read from the GPU counts
-            # array (async scheduling) or from the output-token delta (sync
-            # scheduling, where the counts mechanism is not initialized).
-            if self.zero_rejected_kv:
-                num_rejected_kv_slots = 0
-                if (
-                    req_state.prev_num_draft_len
-                    and req_index is not None
-                    and not resumed_from_preemption
-                ):
-                    if self.use_async_scheduling:
-                        prev_req_row = self.input_batch.prev_req_id_to_index
-                        if (
-                            prev_req_row is not None
-                            and (prev_req_index := prev_req_row.get(req_id))
-                            is not None
-                            and prev_req_index < len(valid_sampled_token_count)
-                        ):
-                            valid_count = valid_sampled_token_count[prev_req_index]
-                        else:
-                            valid_count = None
-                    elif num_output_tokens == len(req_state.output_token_ids):
-                        valid_count = len(req_state.output_token_ids) - num_output_tokens
-                    else:
-                        valid_count = None
-                    if valid_count is not None:
-                        num_rejected_kv_slots = min(
-                            req_state.prev_num_draft_len,
-                            max(0, req_state.prev_num_draft_len + 1 - valid_count),
-                        )
-                req_state.num_rejected_kv_slots = num_rejected_kv_slots
-
             # Update the cached states.
             req_state.num_computed_tokens = num_computed_tokens
 
@@ -1951,48 +1916,74 @@ class GPUModelRunner(
         num_scheduled_tokens: np.ndarray,
         cu_num_tokens: np.ndarray,
     ) -> None:
-        """Zero KV cache slots of draft tokens rejected in the previous step.
+        """Zero every KV cache slot of the current segment before the forward.
 
-        The rejected drafts' slots are the first ``num_rejected`` slots of each
-        request's current segment: after a rejection the segment starts at the
-        first rejected draft position, whose KV is re-computed this step from
-        the verified token. With aiter attention (read cache, write after),
-        zeroing makes the verification logits exactly match the non-speculative
-        baseline, which reads zeros at unwritten slots.
+        The aiter attention kernel reads the old content of a slot before
+        writing the new KV into it. Slots that are written for the first time
+        (fresh blocks reused from other requests) therefore contribute garbage
+        to the attention at their own position, making every run depend on the
+        block-reuse history and diverge between speculative and non-speculative
+        execution. Zeroing the whole segment makes both cases read zeros,
+        which is deterministic and identical across runs and modes.
 
-        Only the main model's KV cache is touched; the MTP draft layer handles
-        its own rejections by shrinking its seq_lens, so its stale slots are
-        never read.
+        The rejected drafts' slots (the old fix's target) are the first slots
+        of the segment after a rejection, so this strictly subsumes them.
+
+        Only the main model's KV cache is touched; the MTP draft layer's cache
+        only affects draft proposal quality (never the verified output), so it
+        is skipped.
+
+        NOTE: we skip draft layers by layer name, not by kv_cache_gid: the
+        draft layers may share the same KV cache group (and thus gid) as the
+        main model's layers (e.g. HY3's single MTP layer is grouped with the
+        80 main layers), so skipping the whole group would skip everything.
         """
-        skip_kv_cache_gids: set[int] = set()
+        skip_layer_names: set[str] = set()
         if isinstance(self.drafter, EagleProposer | DraftModelProposer):
-            skip_kv_cache_gids.add(self.drafter.kv_cache_gid)
-
-        slot_ids: list[int] = []
-        for req_idx in range(num_reqs):
-            req_id = self.input_batch.req_ids[req_idx]
-            num_rejected = min(
-                self.requests[req_id].num_rejected_kv_slots,
-                int(num_scheduled_tokens[req_idx]),
+            skip_layer_names = getattr(
+                self.drafter, "_draft_attn_layer_names", set()
             )
-            if num_rejected > 0:
-                start = int(cu_num_tokens[req_idx])
-                slot_ids.extend(
-                    self.input_batch.block_table.slot_mapping.np[
-                        start : start + num_rejected
-                    ].tolist()
-                )
-        # Filter out not-local slots (-1, possible with context parallelism).
-        slot_ids = [s for s in slot_ids if s >= 0]
-        if not slot_ids:
-            return
 
-        slot_t = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
+        debug_kv = os.environ.get("VLLM_HY3_DEBUG_KV")
+        if debug_kv:
+            print(f"[HY3-KV] zeroing called: num_reqs={num_reqs}", flush=True)
+
         for kv_cache_gid, attn_groups in enumerate(self.attn_groups):
-            if kv_cache_gid in skip_kv_cache_gids:
+            # Each KV cache group has its own BlockTable and slot space.
+            blk_table = self.input_batch.block_table[kv_cache_gid]
+            slot_ids: list[int] = []
+            for req_idx in range(num_reqs):
+                req_id = self.input_batch.req_ids[req_idx]
+                # cu_num_tokens is a cumsum without a leading zero, so the
+                # request's segment start is its previous cumsum.
+                start = int(cu_num_tokens[req_idx]) - int(
+                    num_scheduled_tokens[req_idx]
+                )
+                num_to_zero = int(num_scheduled_tokens[req_idx])
+                slot_ids.extend(
+                    blk_table.slot_mapping.np[start : start + num_to_zero].tolist()
+                )
+                if debug_kv:
+                    rs = self.requests[req_id]
+                    print(
+                        f"[HY3-KV] zeroing req {req_id}: segment=[{start}, "
+                        f"{start + num_to_zero}) rej_field="
+                        f"{rs.num_rejected_kv_slots} prev_draft="
+                        f"{rs.prev_num_draft_len} id={id(rs)}",
+                        flush=True,
+                    )
+            # Filter out not-local slots (-1, possible with context parallelism).
+            slot_ids = [s for s in slot_ids if s >= 0]
+            if not slot_ids:
                 continue
+
+            slot_t = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
             for attn_group in attn_groups:
                 for layer_name in attn_group.layer_names:
+                    if layer_name in skip_layer_names:
+                        # Draft layers shrink their own seq_lens on rejection,
+                        # so their stale slots are never read.
+                        continue
                     kv_cache = self.kv_caches_by_name[layer_name]
                     if kv_cache.shape[0] == 2:
                         kv_tensors = (kv_cache[0], kv_cache[1])
@@ -2000,6 +1991,12 @@ class GPUModelRunner(
                         kv_tensors = (kv_cache[:, 0], kv_cache[:, 1])
                     else:
                         # Unknown layout: skip rather than corrupt the cache.
+                        if debug_kv:
+                            print(
+                                f"[HY3-KV] LAYOUT SKIP {layer_name} "
+                                f"shape={tuple(kv_cache.shape)}",
+                                flush=True,
+                            )
                         continue
                     # The slot ids are linear over the logical slot space, so
                     # they map onto the (kernel) block/offset dims directly.
@@ -2008,6 +2005,12 @@ class GPUModelRunner(
                     offsets = slot_t % block_size
                     for cache in kv_tensors:
                         cache[block_ids, offsets] = 0
+                    if debug_kv:
+                        print(
+                            f"[HY3-KV] zeroed {len(slot_ids)} slots in {layer_name} "
+                            f"shape={tuple(kv_cache.shape)} block_size={block_size}",
+                            flush=True,
+                        )
 
     def _build_attention_metadata(
         self,
@@ -3324,6 +3327,12 @@ class GPUModelRunner(
         # the sampled tokens back, because there's no direct communication
         # between the first-stage worker and the last-stage worker.
         req_ids = self.input_batch.req_ids
+        # HY3/DCU MTP fix: with async scheduling the valid sampled-token
+        # counts are only available on CPU via an event copy, so fetch them
+        # once before the loop (used to count rejected draft tokens below).
+        valid_sampled_token_count: list[int] = []
+        if self.use_async_scheduling and self.zero_rejected_kv:
+            valid_sampled_token_count = self._get_valid_sampled_token_count()
         for req_idx in range(num_sampled_tokens):
             if self.use_async_scheduling:
                 sampled_ids = [-1] if req_idx not in invalid_req_indices_set else None
@@ -3350,6 +3359,55 @@ class GPUModelRunner(
             req_id = req_ids[req_idx]
             req_state = self.requests[req_id]
             req_state.output_token_ids.extend(sampled_ids)
+
+            # The step trace is useful for both modes (baseline has no
+            # rejected-draft accounting, hence no zero_rejected_kv gate).
+            if os.environ.get("VLLM_HY3_DEBUG_KV"):
+                # Per-step trace: which tokens were fed at the segment
+                # positions, which drafts were proposed for this step, and
+                # which head/draft samples were accepted.
+                seg_in = self.input_batch.token_ids_cpu[
+                    req_idx, start_idx - 1 : start_idx + 2
+                ].tolist()
+                print(
+                    f"[HY3-KV] step {req_id} pos={start_idx} "
+                    f"in=[{','.join(map(str, seg_in))}] "
+                    f"prev_draft={req_state.prev_num_draft_len} "
+                    f"drafts={list(self.input_batch.spec_token_ids[req_idx])} "
+                    f"sampled={list(sampled_ids)} "
+                    f"out_len={len(req_state.output_token_ids)}",
+                    flush=True,
+                )
+
+            if self.zero_rejected_kv and req_state.prev_num_draft_len:
+                # HY3/DCU MTP fix: count the draft tokens rejected in this
+                # step. Their KV-cache slots are stale and must be zeroed
+                # before the next forward pass: the aiter attention backend
+                # reads KV before writing it, and the first positions of the
+                # next segment overlap the rejected draft positions.
+                # valid_count includes the head token (1 + accepted drafts).
+                if self.use_async_scheduling:
+                    valid_count = (
+                        valid_sampled_token_count[req_idx]
+                        if valid_sampled_token_count
+                        else 0
+                    )
+                else:
+                    valid_count = len(valid_sampled_token_ids[req_idx])
+                req_state.num_rejected_kv_slots = min(
+                    req_state.prev_num_draft_len,
+                    max(0, req_state.prev_num_draft_len + 1 - valid_count),
+                )
+                if os.environ.get("VLLM_HY3_DEBUG_KV") and (
+                    req_state.num_rejected_kv_slots
+                ):
+                    print(
+                        f"[HY3-KV] bookkeep {req_id} prev_draft="
+                        f"{req_state.prev_num_draft_len} valid={valid_count} "
+                        f"rejected={req_state.num_rejected_kv_slots} "
+                        f"id={id(req_state)}",
+                        flush=True,
+                    )
 
         # Compute prompt logprobs if needed.
         prompt_logprobs_dict = self._get_prompt_logprobs_dict(
