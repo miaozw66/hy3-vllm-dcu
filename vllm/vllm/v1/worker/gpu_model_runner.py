@@ -1978,6 +1978,19 @@ class GPUModelRunner(
                 continue
 
             slot_t = torch.tensor(slot_ids, device=self.device, dtype=torch.long)
+
+            # Layers of one KV cache group share the same block table/slot
+            # space and, in the supported layouts, the same block size, so
+            # block_ids/offsets are derived once per gid instead of once per
+            # layer. A single advanced index zeroes K and V in one dispatch:
+            # for a (K, V, blocks, ...) leading layout index [:, block_ids,
+            # offsets]; for a (blocks, K, V, ...) layout permute K/V to the
+            # front first. If a layer deviates in block size it falls back to
+            # a per-layer derivation. The zeroed slots/layers are identical to
+            # the former per-tensor two-scatter form.
+            block_size = None
+            block_ids = None
+            offsets = None
             for attn_group in attn_groups:
                 for layer_name in attn_group.layer_names:
                     if layer_name in skip_layer_names:
@@ -1986,9 +1999,9 @@ class GPUModelRunner(
                         continue
                     kv_cache = self.kv_caches_by_name[layer_name]
                     if kv_cache.shape[0] == 2:
-                        kv_tensors = (kv_cache[0], kv_cache[1])
+                        kv_dim = 0
                     elif kv_cache.shape[1] == 2:
-                        kv_tensors = (kv_cache[:, 0], kv_cache[:, 1])
+                        kv_dim = 1
                     else:
                         # Unknown layout: skip rather than corrupt the cache.
                         if debug_kv:
@@ -1998,13 +2011,25 @@ class GPUModelRunner(
                                 flush=True,
                             )
                         continue
-                    # The slot ids are linear over the logical slot space, so
-                    # they map onto the (kernel) block/offset dims directly.
-                    block_size = kv_cache.shape[2]
-                    block_ids = slot_t // block_size
-                    offsets = slot_t % block_size
-                    for cache in kv_tensors:
-                        cache[block_ids, offsets] = 0
+                    bs = kv_cache.shape[2]
+                    if bs != block_size:
+                        # (Re)derive for this layer or group; correct even if
+                        # layers in the gid differ in block size. The slot ids
+                        # are linear over the logical slot space, so they map
+                        # onto the block/offset dims directly.
+                        block_size = bs
+                        block_ids = slot_t // block_size
+                        offsets = slot_t % block_size
+                    if kv_dim == 0:
+                        # (K, V, blocks, block_size, heads, head_dim)
+                        kv_cache[:, block_ids, offsets] = 0
+                    else:
+                        # (blocks, K, V, block_size, heads, head_dim): move the
+                        # (K, V) dim to the front so block/offset indexing can
+                        # stay adjacent (pairwise) after the K/V slice.
+                        kv_cache.permute(1, 0, *range(2, kv_cache.dim()))[
+                            :, block_ids, offsets
+                        ] = 0
                     if debug_kv:
                         print(
                             f"[HY3-KV] zeroed {len(slot_ids)} slots in {layer_name} "
