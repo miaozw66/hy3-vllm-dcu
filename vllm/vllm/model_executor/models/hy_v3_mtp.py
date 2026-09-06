@@ -31,6 +31,7 @@ import torch
 from torch import nn
 from transformers import PretrainedConfig
 
+from vllm.compilation.decorators import support_torch_compile
 from vllm.config import CacheConfig, ModelConfig, VllmConfig
 from vllm.model_executor.layers.fused_moe import FusedMoE
 from vllm.model_executor.layers.layernorm import RMSNorm
@@ -118,14 +119,19 @@ class HYV3MultiTokenPredictorLayer(nn.Module):
         spec_step_index: int = 0,
     ) -> torch.Tensor:
         assert inputs_embeds is not None
-        # masking inputs at position 0, as not needed by MTP
-        inputs_embeds[positions == 0] = 0
+        # Mask inputs at position 0, as not needed by MTP. Out-of-place on
+        # purpose: under cudagraph the MM-path inputs_embeds is the proposer's
+        # persistent buffer, and in-place writes on captured input buffers are
+        # illegal (data-dependent writes would be baked into the graph).
+        inputs_embeds = torch.where(positions.unsqueeze(-1) == 0, 0, inputs_embeds)
         inputs_embeds = self.enorm(inputs_embeds)
         previous_hidden_states = self.hnorm(previous_hidden_states)
 
         hidden_states = self.eh_proj(
             torch.cat([inputs_embeds, previous_hidden_states], dim=-1)
         )
+
+        # HYV3DecoderLayer returns (hidden_states, residual)
         hidden_states, residual = self.mtp_block(
             positions=positions, hidden_states=hidden_states, residual=None
         )
@@ -134,12 +140,22 @@ class HYV3MultiTokenPredictorLayer(nn.Module):
         return hidden_states
 
 
+@support_torch_compile
 class HYV3MultiTokenPredictor(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
-        config = vllm_config.model_config.hf_config
+        # Prefer the draft config produced by SpeculativeConfig (holds the
+        # MTP-specific fields like n_predict), fall back to the target config.
+        spec_config = vllm_config.speculative_config
+        draft_config = (
+            spec_config.draft_model_config.hf_config
+            if spec_config is not None
+            and spec_config.draft_model_config is not None
+            else None
+        )
+        config = draft_config or vllm_config.model_config.hf_config
         self.mtp_start_layer_idx = config.num_hidden_layers
-        self.num_mtp_layers = config.num_nextn_predict_layers
+        self.num_mtp_layers = getattr(config, "num_nextn_predict_layers", 1)
 
         # to map the exact layer index from weights
         self.layers = torch.nn.ModuleDict(
@@ -197,6 +213,7 @@ class HYV3MultiTokenPredictor(nn.Module):
         return logits
 
 
+@support_torch_compile
 class HYV3MTP(nn.Module):
     def __init__(self, *, vllm_config: VllmConfig, prefix: str = ""):
         super().__init__()
@@ -261,7 +278,7 @@ class HYV3MTP(nn.Module):
         v = v.reshape(-1, hidden_size)
         return torch.concat((q, k, v))
 
-    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]):
+    def load_weights(self, weights: Iterable[tuple[str, torch.Tensor]]) -> set[str]:
         cla_factor = _get_cla_factor(self.config)
         stacked_params_mapping = [
             # (param_name, shard_name, shard_id)
@@ -299,6 +316,7 @@ class HYV3MTP(nn.Module):
             expert_params_mapping = {}
 
         params_dict = dict(self.named_parameters())
+        loaded_params: set[str] = set()
 
         # V3 shared weights mapping:
         # - embed_tokens: from main model's model.embed_tokens.weight
@@ -322,6 +340,7 @@ class HYV3MTP(nn.Module):
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, loaded_weight)
+                    loaded_params.add(target_name)
                 continue
 
             if "rotary_emb.inv_freq" in name:
@@ -339,8 +358,10 @@ class HYV3MTP(nn.Module):
             ):
                 param = params_dict[scale_name]
                 weight_loader = getattr(param, "weight_loader", default_weight_loader)
-                loaded_weight = loaded_weight[0]
+                if loaded_weight.dim() == 0:
+                    loaded_weight = loaded_weight[0]
                 weight_loader(param, loaded_weight)
+                loaded_params.add(scale_name)
                 continue
             spec_layer = get_spec_layer_idx_from_weight_name(self.config, name)
             if spec_layer is None:
@@ -378,6 +399,7 @@ class HYV3MTP(nn.Module):
                 weight_loader(param, loaded_weight, shard_id)
 
                 is_found = True
+                loaded_params.add(name)
                 break
             if is_found:
                 continue
@@ -407,6 +429,7 @@ class HYV3MTP(nn.Module):
                     else:
                         weight_loader(param, loaded_weight[offset:new_offset], shard_id)
                     offset = new_offset
+                loaded_params.add(name)
 
                 break
             else:
@@ -421,13 +444,19 @@ class HYV3MTP(nn.Module):
                         continue
                     param = params_dict[name]
                     weight_loader = param.weight_loader
-                    weight_loader(
+                    # return_success lets us distinguish "expert not local to
+                    # this rank" (skip, EP case) from a genuinely missing
+                    # weight (must not be counted as loaded).
+                    success = weight_loader(
                         param,
                         loaded_weight,
                         name,
                         shard_id=shard_id,
                         expert_id=expert_id,
+                        return_success=True,
                     )
+                    if success:
+                        loaded_params.add(name)
                     break
                 else:
                     if is_pp_missing_parameter(name, self):
@@ -444,6 +473,29 @@ class HYV3MTP(nn.Module):
                         param, "weight_loader", default_weight_loader
                     )
                     weight_loader(param, loaded_weight)
+                    loaded_params.add(name)
+
+        # Validate that weights were loaded for each expected MTP layer.
+        # Without this, a checkpoint missing the MTP layers (e.g. quantized
+        # without them) would silently leave the drafter on random weights.
+        loaded_layers: set[int] = set()
+        for param_name in loaded_params:
+            spec_layer = get_spec_layer_idx_from_weight_name(self.config, param_name)
+            if spec_layer is not None:
+                loaded_layers.add(spec_layer)
+        for layer_idx in range(
+            mtp_start, mtp_start + self.model.num_mtp_layers
+        ):
+            if layer_idx not in loaded_layers:
+                raise ValueError(
+                    f"MTP speculative decoding layer {layer_idx} weights "
+                    f"missing from checkpoint. The checkpoint may have "
+                    f"been quantized without including the MTP layers. "
+                    f"Use a checkpoint that includes MTP layer weights, "
+                    f"or disable speculative decoding."
+                )
+
+        return loaded_params
 
     def _rewrite_spec_layer_name(self, spec_layer: int, name: str) -> str:
         """Rewrite spec layer weight names to match vLLM module structure."""

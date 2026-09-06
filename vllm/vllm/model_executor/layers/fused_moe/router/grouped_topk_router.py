@@ -128,6 +128,22 @@ def grouped_topk(
     else:
         raise ValueError(f"Unsupported scoring function: {scoring_func}")
 
+    if num_expert_group == 1:
+        # num_expert_group=1 (HY3 degenerate grouped routing): the single group
+        # spans every expert, so the group gate + group mask below are no-ops.
+        # Skip straight to a flat top-k over the already-biased scores. Math is
+        # identical to the grouped path; this only avoids the group_scores topk,
+        # the scatter/expand mask and the second masked topk (per-step sort tax).
+        use_sorted = vllm_is_batch_invariant()
+        topk_weights, topk_ids = torch.topk(
+            scores, k=topk, dim=-1, sorted=use_sorted
+        )
+        if renormalize:
+            topk_weights = topk_weights / topk_weights.sum(dim=-1, keepdim=True)
+        if routed_scaling_factor != 1.0:
+            topk_weights = topk_weights * routed_scaling_factor
+        return topk_weights.to(torch.float32), topk_ids.to(torch.int32)
+
     group_scores = (
         scores.view(num_token, num_expert_group, -1).topk(2, dim=-1)[0].sum(dim=-1)
     ) if e_score_correction_bias is not None else (
