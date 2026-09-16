@@ -49,4 +49,15 @@ def load_eagle_model(target_model: nn.Module, vllm_config: VllmConfig) -> nn.Mod
             del eagle_model.lm_head
         eagle_model.lm_head = target_model.lm_head
 
+        # HY3 MTP computes draft logits through each layer's shared head.
+        inner = getattr(eagle_model, "model", None)
+        layers = getattr(inner, "layers", None) if inner is not None else None
+        if layers is not None:
+            items = layers.values() if isinstance(layers, nn.ModuleDict) else layers
+            for layer in items:
+                shared_head = getattr(layer, "shared_head", None)
+                if shared_head is not None and hasattr(shared_head, "head"):
+                    del shared_head.head
+                    shared_head.head = target_model.lm_head
+
     return eagle_model

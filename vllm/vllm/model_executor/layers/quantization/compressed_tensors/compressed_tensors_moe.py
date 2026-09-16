@@ -1103,7 +1103,11 @@ class CompressedTensorsW8A8Int8MoEMethod(CompressedTensorsMoEMethod):
         layer.w2_input_scale = None
 
     def process_weights_after_loading(self, layer: torch.nn.Module) -> None:
-        pass
+        from vllm.model_executor.layers.fused_moe.fused_moe import (
+            register_routed_w13_packed_weight,
+        )
+
+        register_routed_w13_packed_weight(layer)
 
     def get_fused_moe_quant_config(
         self, layer: torch.nn.Module

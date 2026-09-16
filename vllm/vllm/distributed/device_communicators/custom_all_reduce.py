@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
+import os
 from contextlib import contextmanager
 from typing import cast
 
@@ -39,6 +40,14 @@ def _can_p2p(rank: int, world_size: int) -> bool:
         if not gpu_p2p_access_check(rank, i):
             return False
     return True
+
+
+def _is_k100ai_pcie_1stage_enabled() -> bool:
+    return (
+        current_platform.is_rocm()
+        and envs.VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE
+        and os.getenv("VLLM_CUSTOM_ALLREDUCE_ALGO") == "1stage"
+    )
 
 
 def is_weak_contiguous(inp: torch.Tensor):
@@ -150,18 +159,23 @@ class CustomAllreduce:
         # this checks hardware and driver support for NVLink
         assert current_platform.is_cuda_alike()
         fully_connected = current_platform.is_fully_connected(physical_device_ids)
-        if world_size > 2 and not fully_connected:
+        self._allow_k100ai_pcie_1stage = _is_k100ai_pcie_1stage_enabled()
+        if (
+            world_size > 2
+            and not fully_connected
+            and not self._allow_k100ai_pcie_1stage
+        ):
             logger.warning(
                 "Custom allreduce is disabled because it's not supported on"
                 " more than two PCIe-only GPUs. To silence this warning, "
                 "specify disable_custom_all_reduce=True explicitly."
             )
             return
-        # test P2P capability, this checks software/cudaruntime support
-        # this is expensive to compute at the first time
-        # then we cache the result
-        # On AMD GPU, p2p is always enabled between XGMI connected GPUs
-        if not current_platform.is_rocm() and not _can_p2p(rank, world_size):
+        # K100AI PCIe custom allreduce is explicitly opted in and requires P2P.
+        if (
+            (not current_platform.is_rocm() or self._allow_k100ai_pcie_1stage)
+            and not _can_p2p(rank, world_size)
+        ):
             logger.warning(
                 "Custom allreduce is disabled because your platform lacks "
                 "GPU P2P capability or P2P test failed. To silence this "
@@ -241,7 +255,11 @@ class CustomAllreduce:
             return False
         # for 4 or more non NVLink-capable GPUs, custom allreduce provides
         # little performance improvement over NCCL.
-        if self.world_size == 2 or self.fully_connected:
+        if (
+            self.world_size == 2
+            or self.fully_connected
+            or self._allow_k100ai_pcie_1stage
+        ):
             return inp_size < self.max_size
         return False
 

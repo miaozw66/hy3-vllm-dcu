@@ -2213,6 +2213,43 @@ def wvSplitKQ(
     return out
 
 
+def hy3_w8a8_pack(weight_kn: torch.Tensor) -> torch.Tensor:
+    return torch.ops._rocm_C.hy3_w8a8_pack(weight_kn)
+
+
+def hy3_w8a8_scaled_mm(
+    activation_q: torch.Tensor,
+    packed_weight: torch.Tensor,
+    activation_scale: torch.Tensor,
+    weight_scale: torch.Tensor,
+) -> torch.Tensor:
+    return torch.ops._rocm_C.hy3_w8a8_scaled_mm(
+        activation_q, packed_weight, activation_scale, weight_scale
+    )
+
+
+def hy3_mtp_paged_attention(
+    out: torch.Tensor,
+    q: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    query_start_loc: torch.Tensor,
+    seq_lens: torch.Tensor,
+    block_tables: torch.Tensor,
+    softmax_scale: float,
+) -> None:
+    torch.ops._rocm_C.hy3_mtp_paged_attention(
+        out,
+        q,
+        key_cache,
+        value_cache,
+        query_start_loc,
+        seq_lens,
+        block_tables,
+        softmax_scale,
+    )
+
+
 # moe
 def moe_sum(input: torch.Tensor, output: torch.Tensor):
     torch.ops._moe_C.moe_sum(input, output)

@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
-"""Simple HTTP server: serves web_ui.html at / and proxies /v1/* to vLLM.
-Usage: python3 web_server.py [port]
-Default port: 8080
-"""
-import sys
-import http.server
-import urllib.request
-import urllib.error
+"""Serve a local web UI at / and proxy /v1/* to vLLM.
 
-VLLM = "http://localhost:8000"
-HTML_FILE = "/data/mzw/vllm-hy3/web_ui.html"
+Usage:
+    HY3_WEB_UI_HTML=/path/to/web_ui.html python3 web_server.py [port]
+
+Environment:
+    HY3_WEB_UI_HTML: HTML page to serve. Defaults to web_ui.html beside this file.
+    VLLM_BASE_URL: vLLM API base URL. Defaults to http://127.0.0.1:8000.
+    HY3_WEB_HOST: bind address. Defaults to 127.0.0.1.
+"""
+import http.server
+import os
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+VLLM = os.environ.get("VLLM_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
+DEFAULT_HTML_FILE = Path(__file__).with_name("web_ui.html")
+HTML_FILE = Path(os.environ.get("HY3_WEB_UI_HTML", str(DEFAULT_HTML_FILE)))
+HOST = os.environ.get("HY3_WEB_HOST", "127.0.0.1")
 
 
 class ProxyHandler(http.server.BaseHTTPRequestHandler):
@@ -18,7 +28,7 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
-            with open(HTML_FILE, "rb") as f:
+            with HTML_FILE.open("rb") as f:
                 self.wfile.write(f.read())
         elif self.path == "/health":
             self._proxy("GET")
@@ -100,7 +110,12 @@ class ProxyHandler(http.server.BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    if not HTML_FILE.is_file():
+        raise SystemExit(
+            f"Web UI file not found: {HTML_FILE}. Set HY3_WEB_UI_HTML to an HTML file."
+        )
+
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8080
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), ProxyHandler)
-    print(f"HY3 Web UI ready: http://<ip>:{port}")
+    server = http.server.ThreadingHTTPServer((HOST, port), ProxyHandler)
+    print(f"HY3 Web UI ready: http://{HOST}:{port}")
     server.serve_forever()

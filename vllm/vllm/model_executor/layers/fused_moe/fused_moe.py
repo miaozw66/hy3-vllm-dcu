@@ -56,6 +56,124 @@ from vllm.utils.torch_utils import direct_register_custom_op
 
 logger = init_logger(__name__)
 
+_ROUTED_W13_SHAPE = (192, 384, 4096)
+_ROUTED_W13_TOP_K = 8
+_ROUTED_W13_QUALIFIED_M = (4,)
+_routed_w13_loaded = False
+_routed_w13_packed: dict[int, torch.Tensor] = {}
+_routed_w13_token_ids: dict[tuple[torch.device, int], torch.Tensor] = {}
+_routed_w13_packed_bytes = 0
+
+
+def _routed_w13_enabled() -> bool:
+    return os.getenv("ZTH_ROUTED_W13_MODE", "off") == "use"
+
+
+def _routed_w13_packed_budget() -> int:
+    try:
+        return max(0, int(os.getenv("ZTH_ROUTED_W13_PACKED_MAX_BYTES", "0")))
+    except ValueError:
+        return 0
+
+
+def _load_routed_w13_ops() -> bool:
+    global _routed_w13_loaded
+    if _routed_w13_loaded:
+        return True
+    so_path = os.getenv("ZTH_ROUTED_W13_SO")
+    if not so_path:
+        logger.warning("Routed w13 HIP is disabled: ZTH_ROUTED_W13_SO is unset")
+        return False
+    if not os.path.isfile(so_path):
+        logger.warning("Routed w13 HIP library is unavailable: %s", so_path)
+        return False
+    try:
+        torch.ops.load_library(so_path)
+    except (OSError, RuntimeError) as exc:
+        logger.warning("Unable to load routed w13 HIP library: %s", exc)
+        return False
+    _routed_w13_loaded = True
+    return True
+
+
+def register_routed_w13_packed_weight(layer: torch.nn.Module) -> bool:
+    """Create a stable packed w13 copy before CUDA graph capture."""
+    global _routed_w13_packed_bytes
+    if not _routed_w13_enabled() or not hasattr(layer, "w13_weight"):
+        return False
+    weight = layer.w13_weight
+    if (
+        not weight.is_cuda
+        or weight.dtype != torch.int8
+        or not weight.is_contiguous()
+        or tuple(weight.shape) != _ROUTED_W13_SHAPE
+    ):
+        return False
+    ptr = weight.data_ptr()
+    if ptr in _routed_w13_packed:
+        return True
+    required_bytes = weight.numel() * weight.element_size()
+    if _routed_w13_packed_bytes + required_bytes > _routed_w13_packed_budget():
+        return False
+    if not _load_routed_w13_ops():
+        return False
+    try:
+        packed = torch.ops.routed_w13.w1_pack(weight)
+        layer.register_buffer("_zth_routed_w13_packed", packed, persistent=False)
+        token_ids = torch.arange(
+            _ROUTED_W13_QUALIFIED_M[0], device=weight.device, dtype=torch.int32
+        ).repeat_interleave(_ROUTED_W13_TOP_K)
+    except (RuntimeError, OSError) as exc:
+        logger.warning("Unable to prepare routed w13 HIP weights: %s", exc)
+        return False
+    _routed_w13_packed[ptr] = packed
+    _routed_w13_token_ids[(weight.device, _ROUTED_W13_QUALIFIED_M[0])] = token_ids
+    _routed_w13_packed_bytes += required_bytes
+    return True
+
+
+def _can_use_routed_w13_hip(
+    *,
+    hidden_states: torch.Tensor,
+    w1: torch.Tensor,
+    topk_ids: torch.Tensor,
+    activation: str,
+    apply_router_weight_on_input: bool,
+    use_fp8_w8a8: bool,
+    use_int8_w8a8: bool,
+    use_int8_w8a16: bool,
+    use_int4_w4a16: bool,
+    per_channel_quant: bool,
+    expert_map: torch.Tensor | None,
+    w1_zp: torch.Tensor | None,
+    block_shape: list[int] | None,
+    w1_bias: torch.Tensor | None,
+) -> bool:
+    m = hidden_states.size(0)
+    return (
+        _routed_w13_enabled()
+        and m in _ROUTED_W13_QUALIFIED_M
+        and hidden_states.dtype == torch.bfloat16
+        and w1.dtype == torch.int8
+        and tuple(w1.shape) == _ROUTED_W13_SHAPE
+        and w1.data_ptr() in _routed_w13_packed
+        and activation == "silu"
+        and not apply_router_weight_on_input
+        and use_int8_w8a8
+        and not use_fp8_w8a8
+        and not use_int8_w8a16
+        and not use_int4_w4a16
+        and per_channel_quant
+        and expert_map is None
+        and w1_zp is None
+        and block_shape is None
+        and w1_bias is None
+        and topk_ids.dtype == torch.int32
+        and topk_ids.is_contiguous()
+        and tuple(topk_ids.shape) == (m, _ROUTED_W13_TOP_K)
+        and (hidden_states.device, m) in _routed_w13_token_ids
+    )
+
 
 @triton.jit
 def write_zeros_to_output(
@@ -1825,29 +1943,68 @@ def fused_experts_impl(
         num_tokens_post_padded.fill_(max_num_tokens_padded)
         sorted_token_ids = None
 
-    dispatch_fused_moe_kernel(
-        qhidden_states,
-        w1,
-        intermediate_cache1,
-        a1q_scale,
-        w1_scale,
-        w1_zp,
-        topk_weights,
-        sorted_token_ids,
-        expert_ids,
-        num_tokens_post_padded,
-        apply_router_weight_on_input,
-        top_k_num,
-        config,
-        compute_type=compute_type,
-        use_fp8_w8a8=use_fp8_w8a8,
-        use_int8_w8a8=use_int8_w8a8,
-        use_int8_w8a16=use_int8_w8a16,
-        use_int4_w4a16=use_int4_w4a16,
-        per_channel_quant=per_channel_quant,
-        block_shape=block_shape,
-        B_bias=w1_bias,
+    use_routed_w13_hip = (
+        naive_block_assignment
+        and a1q_scale.dtype == torch.float32
+        and a1q_scale.is_contiguous()
+        and a1q_scale.numel() == num_tokens
+        and w1_scale is not None
+        and w1_scale.dtype == torch.float32
+        and w1_scale.is_contiguous()
+        and tuple(w1_scale.shape) == (192, 384, 1)
+        and _can_use_routed_w13_hip(
+            hidden_states=hidden_states,
+            w1=w1,
+            topk_ids=topk_ids,
+            activation=activation,
+            apply_router_weight_on_input=apply_router_weight_on_input,
+            use_fp8_w8a8=use_fp8_w8a8,
+            use_int8_w8a8=use_int8_w8a8,
+            use_int8_w8a16=use_int8_w8a16,
+            use_int4_w4a16=use_int4_w4a16,
+            per_channel_quant=per_channel_quant,
+            expert_map=expert_map,
+            w1_zp=w1_zp,
+            block_shape=block_shape,
+            w1_bias=w1_bias,
+        )
     )
+    if use_routed_w13_hip:
+        packed_w1 = _routed_w13_packed[w1.data_ptr()]
+        token_ids = _routed_w13_token_ids[(hidden_states.device, num_tokens)]
+        torch.ops.routed_w13.out(
+            qhidden_states,
+            packed_w1,
+            a1q_scale.reshape(-1),
+            w1_scale.squeeze(-1),
+            token_ids,
+            topk_ids.view(-1),
+            intermediate_cache1.view(-1, N),
+        )
+    else:
+        dispatch_fused_moe_kernel(
+            qhidden_states,
+            w1,
+            intermediate_cache1,
+            a1q_scale,
+            w1_scale,
+            w1_zp,
+            topk_weights,
+            sorted_token_ids,
+            expert_ids,
+            num_tokens_post_padded,
+            apply_router_weight_on_input,
+            top_k_num,
+            config,
+            compute_type=compute_type,
+            use_fp8_w8a8=use_fp8_w8a8,
+            use_int8_w8a8=use_int8_w8a8,
+            use_int8_w8a16=use_int8_w8a16,
+            use_int4_w4a16=use_int4_w4a16,
+            per_channel_quant=per_channel_quant,
+            block_shape=block_shape,
+            B_bias=w1_bias,
+        )
 
     apply_moe_activation(
         activation_enum, intermediate_cache2, intermediate_cache1.view(-1, N)
@@ -2073,28 +2230,67 @@ class TritonExperts(mk.FusedMoEExpertsModular):
             topk_ids, config["BLOCK_SIZE_M"], global_num_experts, expert_map
         )
 
-        invoke_fused_moe_triton_kernel(
-            hidden_states,
-            w1,
-            intermediate_cache1,
-            a1q_scale,
-            self.w1_scale,
-            None,  # topk_weights
-            sorted_token_ids,
-            expert_ids,
-            num_tokens_post_padded,
-            False,  # mul_routed_weights
-            top_k_num,
-            config,
-            compute_type=compute_type,
-            use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
-            use_int8_w8a8=self.quant_config.use_int8_w8a8,
-            use_int8_w8a16=self.quant_config.use_int8_w8a16,
-            use_int4_w4a16=self.quant_config.use_int4_w4a16,
-            per_channel_quant=self.per_act_token_quant,
-            block_shape=self.block_shape,
-            B_bias=self.w1_bias,
+        use_routed_w13_hip = (
+            a1q_scale is not None
+            and a1q_scale.dtype == torch.float32
+            and a1q_scale.is_contiguous()
+            and a1q_scale.numel() == num_tokens
+            and self.w1_scale is not None
+            and self.w1_scale.dtype == torch.float32
+            and self.w1_scale.is_contiguous()
+            and tuple(self.w1_scale.shape) == (192, 384, 1)
+            and _can_use_routed_w13_hip(
+                hidden_states=hidden_states,
+                w1=w1,
+                topk_ids=topk_ids,
+                activation=activation.value,
+                apply_router_weight_on_input=apply_router_weight_on_input,
+                use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
+                use_int8_w8a8=self.quant_config.use_int8_w8a8,
+                use_int8_w8a16=self.quant_config.use_int8_w8a16,
+                use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                per_channel_quant=self.per_act_token_quant,
+                expert_map=expert_map,
+                w1_zp=None,
+                block_shape=self.block_shape,
+                w1_bias=self.w1_bias,
+            )
         )
+        if use_routed_w13_hip:
+            packed_w1 = _routed_w13_packed[w1.data_ptr()]
+            token_ids = _routed_w13_token_ids[(hidden_states.device, num_tokens)]
+            torch.ops.routed_w13.out(
+                hidden_states,
+                packed_w1,
+                a1q_scale.reshape(-1),
+                self.w1_scale.squeeze(-1),
+                token_ids,
+                topk_ids.view(-1),
+                intermediate_cache1.view(-1, N),
+            )
+        else:
+            invoke_fused_moe_triton_kernel(
+                hidden_states,
+                w1,
+                intermediate_cache1,
+                a1q_scale,
+                self.w1_scale,
+                None,  # topk_weights
+                sorted_token_ids,
+                expert_ids,
+                num_tokens_post_padded,
+                False,  # mul_routed_weights
+                top_k_num,
+                config,
+                compute_type=compute_type,
+                use_fp8_w8a8=self.quant_config.use_fp8_w8a8,
+                use_int8_w8a8=self.quant_config.use_int8_w8a8,
+                use_int8_w8a16=self.quant_config.use_int8_w8a16,
+                use_int4_w4a16=self.quant_config.use_int4_w4a16,
+                per_channel_quant=self.per_act_token_quant,
+                block_shape=self.block_shape,
+                B_bias=self.w1_bias,
+            )
 
         self.activation(
             activation, intermediate_cache2, intermediate_cache1.view(-1, N)

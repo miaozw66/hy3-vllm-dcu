@@ -780,8 +780,13 @@ class RocmPlatform(Platform):
 
     @classmethod
     def use_custom_allreduce(cls) -> bool:
-        # We only enable custom allreduce for MI300 series
-        return any(gfx in _GCN_ARCH for gfx in ["gfx94", "gfx95"])
+        if any(gfx in _GCN_ARCH for gfx in ["gfx94", "gfx95"]):
+            return True
+        return (
+            "gfx928" in _GCN_ARCH
+            and envs.VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE
+            and os.getenv("VLLM_CUSTOM_ALLREDUCE_ALGO") == "1stage"
+        )
 
     @classmethod
     def opaque_attention_op(cls) -> bool:

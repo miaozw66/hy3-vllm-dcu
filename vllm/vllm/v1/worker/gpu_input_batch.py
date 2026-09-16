@@ -48,10 +48,6 @@ class CachedRequestState:
 
     # Used when both async_scheduling and spec_decode are enabled.
     prev_num_draft_len: int = 0
-    # Number of draft tokens rejected in the previous step. Their KV cache
-    # slots (the head of the current segment) must be zeroed before this
-    # step's attention so verification logits match the non-spec baseline.
-    num_rejected_kv_slots: int = 0
 
     # for pooling models
     pooling_params: PoolingParams | None = None

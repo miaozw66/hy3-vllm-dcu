@@ -116,6 +116,7 @@ if TYPE_CHECKING:
     VLLM_ROCM_FP8_PADDING: bool = True
     VLLM_ROCM_MOE_PADDING: bool = True
     VLLM_ROCM_CUSTOM_PAGED_ATTN: bool = True
+    VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE: bool = False
     VLLM_ROCM_SHUFFLE_KV_CACHE_LAYOUT: bool = False
     VLLM_ENABLE_V1_MULTIPROCESSING: bool = True
     VLLM_LOG_BATCHSIZE_INTERVAL: float = -1
@@ -196,6 +197,7 @@ if TYPE_CHECKING:
     VLLM_MORIIO_NUM_WORKERS: int = 1
     VLLM_MOONCAKE_ABORT_REQUEST_TIMEOUT: int = 480
     VLLM_ENABLE_CUDAGRAPH_GC: bool = False
+    VLLM_CUDAGRAPH_POINTER_DIAGNOSTICS: bool = False
     VLLM_LOOPBACK_IP: str = ""
     VLLM_ALLOW_CHUNKED_LOCAL_ATTN_WITH_HYBRID_KV_CACHE: bool = True
     VLLM_ENABLE_RESPONSES_API_STORE: bool = False
@@ -991,6 +993,11 @@ environment_variables: dict[str, Callable[[], Any]] = {
     "VLLM_ROCM_CUSTOM_PAGED_ATTN": lambda: (
         os.getenv("VLLM_ROCM_CUSTOM_PAGED_ATTN", "True").lower() in ("true", "1")
     ),
+    # Explicit opt-in for the verified gfx928 PCIe one-stage custom allreduce.
+    "VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE": lambda: (
+        os.getenv("VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE", "False").lower()
+        in ("true", "1")
+    ),
     # Whether to use the shuffled kv cache layout
     "VLLM_ROCM_SHUFFLE_KV_CACHE_LAYOUT": lambda: (
         os.getenv("VLLM_ROCM_SHUFFLE_KV_CACHE_LAYOUT", "False").lower() in ("true", "1")
@@ -1423,6 +1430,10 @@ environment_variables: dict[str, Callable[[], Any]] = {
     # If set to 1, allows GC to run during capture.
     "VLLM_ENABLE_CUDAGRAPH_GC": lambda: bool(
         int(os.getenv("VLLM_ENABLE_CUDAGRAPH_GC", "0"))
+    ),
+    # Logs CUDA graph-visible GPU tensor storage changes between capture and replay.
+    "VLLM_CUDAGRAPH_POINTER_DIAGNOSTICS": lambda: bool(
+        int(os.getenv("VLLM_CUDAGRAPH_POINTER_DIAGNOSTICS", "0"))
     ),
     # Used to force set up loopback IP
     "VLLM_LOOPBACK_IP": lambda: os.getenv("VLLM_LOOPBACK_IP", ""),

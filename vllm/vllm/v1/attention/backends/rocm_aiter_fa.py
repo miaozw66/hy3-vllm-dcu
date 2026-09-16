@@ -2,11 +2,13 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 """Attention layer with AiterFlashAttention."""
 
+import os
 from dataclasses import dataclass
 from typing import ClassVar
 
 import torch
 
+from vllm import _custom_ops as custom_ops
 from vllm._aiter_ops import rocm_aiter_ops
 from vllm.config import VllmConfig, get_layers_from_vllm_config
 from vllm.config.cache import CacheDType
@@ -31,9 +33,78 @@ from vllm.v1.attention.backends.utils import (
 )
 from vllm.v1.attention.ops.merge_attn_states import merge_attn_states
 from vllm.v1.kv_cache_interface import AttentionSpec
+from vllm.v1.worker.cp_utils import get_total_cp_world_size
 
 _PARTITION_SIZE_ROCM = 256
 _CP_TOKENS_PER_ITER_ROCM = 32 * 1024
+_HY3_MTP_HIP_ATTN_ENABLED = os.getenv("HY3_MTP_HIP_ATTN", "0") == "1"
+
+
+def _has_supported_hy3_mtp_hip_attention_cp_layout(
+    total_cp_world_size: int,
+) -> bool:
+    return total_cp_world_size == 1
+
+
+def _can_use_hy3_mtp_hip_attention(
+    output: torch.Tensor,
+    query: torch.Tensor,
+    key_cache: torch.Tensor,
+    value_cache: torch.Tensor,
+    decode_metadata: "AiterFlashAttentionDecodeMetadata",
+    seq_lens: torch.Tensor,
+    block_table: torch.Tensor,
+    alibi_slopes: torch.Tensor | None,
+    sliding_window: tuple[int, int],
+    softcap: float | None,
+) -> bool:
+    return (
+        _HY3_MTP_HIP_ATTN_ENABLED
+        and _has_supported_hy3_mtp_hip_attention_cp_layout(
+            get_total_cp_world_size()
+        )
+        and decode_metadata.max_query_len == 4
+        and decode_metadata.min_query_len == 4
+        and output.is_cuda
+        and query.is_cuda
+        and key_cache.is_cuda
+        and value_cache.is_cuda
+        and decode_metadata.query_start_loc.is_cuda
+        and seq_lens.is_cuda
+        and block_table.is_cuda
+        and output.device == query.device
+        and key_cache.device == query.device
+        and value_cache.device == query.device
+        and decode_metadata.query_start_loc.device == query.device
+        and seq_lens.device == query.device
+        and block_table.device == query.device
+        and query.ndim == 3
+        and output.shape[1:] == (8, 128)
+        and query.shape[1:] == (8, 128)
+        and key_cache.ndim == 4
+        and key_cache.shape[1:] == (16, 1, 128)
+        and value_cache.shape == key_cache.shape
+        and query.dtype in (torch.bfloat16, torch.float16)
+        and output.dtype == query.dtype
+        and key_cache.dtype == query.dtype
+        and value_cache.dtype == query.dtype
+        and output.is_contiguous()
+        and query.is_contiguous()
+        and key_cache.is_contiguous()
+        and value_cache.is_contiguous()
+        and decode_metadata.query_start_loc.dtype == torch.int32
+        and decode_metadata.query_start_loc.is_contiguous()
+        and seq_lens.dtype == torch.int32
+        and seq_lens.is_contiguous()
+        and block_table.ndim == 2
+        and block_table.dtype == torch.int32
+        and block_table.is_contiguous()
+        and alibi_slopes is None
+        and sliding_window == (-1, -1)
+        and not softcap
+    )
+
+
 if current_platform.is_rocm():
     from vllm.triton_utils import tl, triton
 
@@ -1153,34 +1224,60 @@ class AiterFlashAttentionImpl(AttentionImpl):
                 assert attn_metadata.decode_metadata is not None
                 decode_max_query_len = attn_metadata.decode_metadata.max_query_len
 
-                # Use unified_attention for speculative decoding (multi-token)
+                # Use a narrow hand-written HIP path for HY3 MTP verification.
                 if decode_max_query_len > 1:
                     assert not rocm_aiter_ops.is_shuffle_kv_cache_enabled(), (
                         "Shuffle KV cache layout is not supported with "
                         "speculative decoding (multi-token decode)."
                     )
+                    decode_query_start_loc = (
+                        attn_metadata.decode_metadata.query_start_loc
+                    )
+                    decode_block_table = attn_metadata.block_table[:num_decodes]
+                    decode_seq_lens = attn_metadata.seq_lens[:num_decodes]
+                    if _can_use_hy3_mtp_hip_attention(
+                        output[:num_decode_tokens],
+                        query[:num_decode_tokens],
+                        key_cache,
+                        value_cache,
+                        attn_metadata.decode_metadata,
+                        decode_seq_lens,
+                        decode_block_table,
+                        self.alibi_slopes,
+                        self.sliding_window,
+                        self.logits_soft_cap,
+                    ):
+                        custom_ops.hy3_mtp_paged_attention(
+                            output[:num_decode_tokens],
+                            query[:num_decode_tokens],
+                            key_cache,
+                            value_cache,
+                            decode_query_start_loc,
+                            decode_seq_lens,
+                            decode_block_table,
+                            self.scale,
+                        )
+                        return
+
                     from aiter.ops.triton.unified_attention import (
                         unified_attention,
                     )
 
-                    descale_shape = (
-                        attn_metadata.query_start_loc[:num_decodes].shape[0] - 1,
-                        key_cache.shape[2],
-                    )
+                    descale_shape = (num_decodes, key_cache.shape[2])
                     unified_attention(
                         q=query[:num_decode_tokens],
                         k=key_cache,
                         v=value_cache,
                         out=output[:num_decode_tokens],
-                        cu_seqlens_q=attn_metadata.query_start_loc[:num_decodes],
+                        cu_seqlens_q=decode_query_start_loc,
                         max_seqlen_q=decode_max_query_len,
-                        seqused_k=attn_metadata.seq_lens[:num_decodes],
+                        seqused_k=decode_seq_lens,
                         max_seqlen_k=attn_metadata.max_seq_len,
                         softmax_scale=self.scale,
                         causal=True,
                         alibi_slopes=self.alibi_slopes,
                         window_size=self.sliding_window,
-                        block_table=attn_metadata.block_table[:num_decodes],
+                        block_table=decode_block_table,
                         softcap=self.logits_soft_cap,
                         q_descale=None,
                         k_descale=layer._k_scale.expand(descale_shape),

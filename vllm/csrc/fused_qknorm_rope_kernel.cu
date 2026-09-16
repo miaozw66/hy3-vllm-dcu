@@ -38,7 +38,8 @@
 #ifdef USE_ROCM
   #define FINAL_MASK 0xffffffffffffffffULL
 
-  #if defined(HIP_VERSION) && HIP_VERSION < 70000000
+  #if defined(HIP_VERSION) && HIP_VERSION < 70000000 && \
+      !defined(HIP_ENABLE_WARP_SYNC_BUILTINS)
 // On ROCm versions before 7.0, __syncwarp isn't defined. The below
 // implementation is copy/pasted from the implementation in ROCm 7.0
 __device__ inline void __syncwarp() {

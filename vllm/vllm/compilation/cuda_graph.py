@@ -34,6 +34,118 @@ from vllm.utils.torch_utils import current_stream, weak_ref_tensors
 logger = init_logger(__name__)
 
 
+TensorStorageSignature = tuple[
+    int,
+    int,
+    tuple[int, ...],
+    tuple[int, ...],
+    torch.dtype,
+    torch.device,
+]
+
+
+def _tensor_storage_signature(tensor: torch.Tensor) -> TensorStorageSignature:
+    return (
+        tensor.untyped_storage().data_ptr(),
+        tensor.storage_offset(),
+        tuple(tensor.shape),
+        tuple(tensor.stride()),
+        tensor.dtype,
+        tensor.device,
+    )
+
+
+def _collect_gpu_tensor_storage_signatures(
+    value: Any,
+    path: str,
+    signatures: dict[str, TensorStorageSignature] | None = None,
+    visited: set[int] | None = None,
+    *,
+    include_cpu: bool = False,
+) -> dict[str, TensorStorageSignature]:
+    if signatures is None:
+        signatures = {}
+    if visited is None:
+        visited = set()
+
+    if isinstance(value, torch.Tensor):
+        if include_cpu or value.device.type != "cpu":
+            signatures[path] = _tensor_storage_signature(value)
+        return signatures
+
+    value_id = id(value)
+    if value_id in visited:
+        return signatures
+    visited.add(value_id)
+
+    if isinstance(value, dict):
+        for key in sorted(value, key=repr):
+            _collect_gpu_tensor_storage_signatures(
+                value[key],
+                f"{path}[{key!r}]",
+                signatures,
+                visited,
+                include_cpu=include_cpu,
+            )
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _collect_gpu_tensor_storage_signatures(
+                item, f"{path}[{index}]", signatures, visited, include_cpu=include_cpu
+            )
+    elif dataclasses.is_dataclass(value) and not isinstance(value, type):
+        for field in dataclasses.fields(value):
+            _collect_gpu_tensor_storage_signatures(
+                getattr(value, field.name),
+                f"{path}.{field.name}",
+                signatures,
+                visited,
+                include_cpu=include_cpu,
+            )
+    return signatures
+
+
+def _collect_cudagraph_input_signatures(
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+    forward_context: Any,
+    *,
+    include_cpu: bool = False,
+    include_attention_context: bool = True,
+) -> dict[str, TensorStorageSignature]:
+    signatures = _collect_gpu_tensor_storage_signatures(
+        args, "args", include_cpu=include_cpu
+    )
+    _collect_gpu_tensor_storage_signatures(
+        kwargs, "kwargs", signatures, include_cpu=include_cpu
+    )
+    context_fields = ["dp_metadata", "additional_kwargs"]
+    if include_attention_context:
+        context_fields[:0] = ["attn_metadata", "slot_mapping"]
+    for name in context_fields:
+        _collect_gpu_tensor_storage_signatures(
+            getattr(forward_context, name),
+            f"forward_context.{name}",
+            signatures,
+            include_cpu=include_cpu,
+        )
+    return signatures
+
+
+def _format_cudagraph_signature_differences(
+    expected: dict[str, TensorStorageSignature],
+    actual: dict[str, TensorStorageSignature],
+) -> str | None:
+    if expected == actual:
+        return None
+
+    differences = []
+    for path in sorted(set(expected) | set(actual)):
+        if expected.get(path) != actual.get(path):
+            differences.append(
+                f"{path}: capture={expected.get(path)}, replay={actual.get(path)}"
+            )
+    return "; ".join(differences)
+
 @dataclasses.dataclass(frozen=True)
 class CUDAGraphStat:
     num_unpadded_tokens: int
@@ -138,6 +250,7 @@ class CUDAGraphEntry:
     # for cudagraph debugging, track the input addresses
     # during capture, and check if they are the same during replay
     input_addresses: list[int] | None = None
+    input_storage_signatures: dict[str, TensorStorageSignature] | None = None
 
 
 @dataclasses.dataclass
@@ -194,6 +307,9 @@ class CUDAGraphWrapper:
 
         self.first_run_finished = False
         self.is_debugging_mode = envs.VLLM_LOGGING_LEVEL == "DEBUG"
+        self.is_pointer_diagnostics_enabled = (
+            self.is_debugging_mode or envs.VLLM_CUDAGRAPH_POINTER_DIAGNOSTICS
+        )
         self._capture_stream = None
 
         # assert runtime_mode is not NONE(no cudagraph), otherwise, we don't
@@ -283,6 +399,15 @@ class CUDAGraphWrapper:
                 x.data_ptr() for x in args if isinstance(x, torch.Tensor)
             ]
             entry.input_addresses = input_addresses
+            if self.is_pointer_diagnostics_enabled:
+                entry.input_storage_signatures = _collect_cudagraph_input_signatures(
+                    args,
+                    kwargs,
+                    forward_context,
+                    include_attention_context=(
+                        self.runtime_mode != CUDAGraphMode.PIECEWISE
+                    ),
+                )
             cudagraph = torch.cuda.CUDAGraph()
 
             with ExitStack() as stack:
@@ -353,6 +478,26 @@ class CUDAGraphWrapper:
                 f"during replay. Expected {entry.input_addresses}, "
                 f"got {new_input_addresses}"
             )
+        if self.is_pointer_diagnostics_enabled:
+            assert entry.input_storage_signatures is not None
+            current_signatures = _collect_cudagraph_input_signatures(
+                args,
+                kwargs,
+                forward_context,
+                include_attention_context=(
+                    self.runtime_mode != CUDAGraphMode.PIECEWISE
+                ),
+            )
+            if differences := _format_cudagraph_signature_differences(
+                entry.input_storage_signatures, current_signatures
+            ):
+                logger.warning(
+                    "CUDA graph-visible tensor storage changed during replay "
+                    "for (%s, %s): %s",
+                    self.runtime_mode.name,
+                    entry.batch_descriptor,
+                    differences,
+                )
 
         # Sync offloader before replay - ensures any external dependencies
         # from pre-capture prefetches are satisfied.

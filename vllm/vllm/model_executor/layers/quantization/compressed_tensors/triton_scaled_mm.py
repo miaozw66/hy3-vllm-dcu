@@ -2,6 +2,8 @@
 # SPDX-FileCopyrightText: Copyright contributors to the vLLM project
 
 
+import os
+
 import torch
 
 from vllm.triton_utils import tl, triton
@@ -138,6 +140,68 @@ def scaled_mm_kernel(
 
 # input   - [M, K]
 # weight - [K, N]
+
+# HY3 (gfx928 DCU) decode (M=1) 的实测 tile。键必须是 TP 分片后的
+# per-rank (K, N)，不能使用 checkpoint 的全局矩阵形状。
+# (K, N) -> (BLOCK_SIZE_M, BLOCK_SIZE_N, BLOCK_SIZE_K, num_warps, num_stages)
+_HY3_M1_TILE_TABLE: dict[tuple[int, int], tuple[int, int, int, int, int]] = {
+    (4096, 1280): (32, 16, 256, 4, 2),  # qkv_proj: 60.63 -> 35.60us (1.70x)
+    (1024, 4096): (16, 64, 128, 4, 3),  # o_proj:   25.51 -> 20.54us (1.24x)
+    (4096, 384): (16, 64, 128, 4, 2),  # TP8 shared gate-up: 1.64x
+}
+
+
+def get_triton_scaled_mm_config(
+    m: int,
+    n: int,
+    block_size_m: int = 32,
+    block_size_n: int = 32,
+    block_size_k: int = 32,
+    use_heuristic: bool = True,
+) -> tuple[int, int, int]:
+    if not use_heuristic:
+        return block_size_m, block_size_n, block_size_k
+
+    is_small_n = n < 8192
+    next_power_of_2_m = max(32, triton.next_power_of_2(m))
+    if next_power_of_2_m <= 32:
+        return (64, 64, 256) if is_small_n else (64, 128, 256)
+    if next_power_of_2_m <= 64:
+        return 64, 64, 256
+    if next_power_of_2_m <= 128:
+        return 64, 128, 128
+    return 128, 128, 128
+
+
+def get_triton_scaled_mm_launch_config(
+    m: int,
+    k: int,
+    n: int,
+    input_dtype: torch.dtype,
+    block_size_m: int = 32,
+    block_size_n: int = 32,
+    block_size_k: int = 32,
+    use_heuristic: bool = True,
+) -> tuple[tuple[int, int, int], int | None, int | None]:
+    if (
+        use_heuristic
+        and m == 1
+        and os.getenv("VLLM_HY3_DECODE_TILES", "1") != "0"
+        and (k, n) in _HY3_M1_TILE_TABLE
+    ):
+        bm, bn, bk, nw, ns = _HY3_M1_TILE_TABLE[(k, n)]
+        return (bm, bn, bk), nw, ns
+    tile = get_triton_scaled_mm_config(
+        m,
+        n,
+        block_size_m,
+        block_size_n,
+        block_size_k,
+        use_heuristic,
+    )
+    return tile, None, None
+
+
 def triton_scaled_mm(
     input: torch.Tensor,
     weight: torch.Tensor,
@@ -149,6 +213,8 @@ def triton_scaled_mm(
     block_size_n: int = 32,
     block_size_k: int = 32,
     use_heuristic=True,
+    num_warps: int | None = None,
+    num_stages: int | None = None,
 ) -> torch.Tensor:
     M, K = input.shape
     N = weight.shape[1]
@@ -176,24 +242,32 @@ def triton_scaled_mm(
 
     has_scalar = lambda x: x.shape[0] == 1 and x.shape[1] == 1
 
-    if use_heuristic:
-        is_small_N = N < 8192
-        next_power_of_2_M = max(32, triton.next_power_of_2(M))
-        if next_power_of_2_M <= 32:
-            tile_shape = (64, 64, 256) if is_small_N else (64, 128, 256)
-        elif next_power_of_2_M <= 64:
-            tile_shape = (64, 64, 256)
-        elif next_power_of_2_M <= 128:
-            tile_shape = (64, 128, 128)
-        else:
-            tile_shape = (128, 128, 128)
-
-    block_size_m, block_size_n, block_size_k = tile_shape
+    tile, tuned_num_warps, tuned_num_stages = get_triton_scaled_mm_launch_config(
+        M,
+        K,
+        N,
+        input.dtype,
+        block_size_m,
+        block_size_n,
+        block_size_k,
+        use_heuristic,
+    )
+    block_size_m, block_size_n, block_size_k = tile
+    if num_warps is None:
+        num_warps = tuned_num_warps
+    if num_stages is None:
+        num_stages = tuned_num_stages
 
     block_size_sa = 1 if has_scalar(scale_a) else block_size_m
     block_size_sb = 1 if has_scalar(scale_b) else block_size_n
 
     accumulator_dtype = tl.float32 if input.is_floating_point() else tl.int32
+
+    launch_kwargs = {}
+    if num_warps is not None:
+        launch_kwargs["num_warps"] = num_warps
+    if num_stages is not None:
+        launch_kwargs["num_stages"] = num_stages
 
     # A = input, B = weight, C = result
     # A = M x K, B = K x N, C = M x N
@@ -219,6 +293,7 @@ def triton_scaled_mm(
         BLOCK_SIZE_K=block_size_k,
         BLOCK_SIZE_SCALE_A=block_size_sa,
         BLOCK_SIZE_SCALE_B=block_size_sb,
+        **launch_kwargs,
     )
 
     return result.to(out_dtype)

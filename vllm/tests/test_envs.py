@@ -28,6 +28,14 @@ def test_getattr_without_cache(monkeypatch: pytest.MonkeyPatch):
     assert not hasattr(envs.__getattr__, "cache_info")
 
 
+
+def test_k100ai_pcie_custom_allreduce_opt_in(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE", raising=False)
+    assert not envs.VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE
+    monkeypatch.setenv("VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE", "1")
+    assert envs.VLLM_ROCM_K100AI_PCIE_CUSTOM_ALLREDUCE
+
+
 def test_getattr_with_cache(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("VLLM_HOST_IP", "1.1.1.1")
     monkeypatch.setenv("VLLM_PORT", "1234")

@@ -341,6 +341,22 @@ class SpecDecodeBaseProposer:
                 positions = positions[0]
             self.positions[:num_tokens] = positions
 
+    def _clear_graph_padding(self, num_tokens: int, num_input_tokens: int) -> None:
+        if num_input_tokens <= num_tokens:
+            return
+
+        padding = slice(num_tokens, num_input_tokens)
+        self.input_ids[padding].zero_()
+        self.hidden_states[padding].zero_()
+        if self.uses_mrope:
+            self.mrope_positions[:, padding].zero_()
+        elif self.uses_xdrope_dim > 0 and self.draft_uses_xdrope_dim > 0:
+            self.xdrope_positions[:, padding].zero_()
+        else:
+            self.positions[padding].zero_()
+        if self.supports_mm_inputs:
+            self.inputs_embeds[padding].zero_()
+
     def _get_slot_mapping(
         self,
         num_tokens: int,
@@ -438,6 +454,7 @@ class SpecDecodeBaseProposer:
         cudagraph_runtime_mode, num_input_tokens, num_tokens_across_dp = (
             self._determine_batch_execution_and_padding(num_tokens)
         )
+        self._clear_graph_padding(num_tokens, num_input_tokens)
 
         if self.supports_mm_inputs:
             mm_embeds, is_mm_embed = mm_embed_inputs or (None, None)
@@ -1070,6 +1087,7 @@ class SpecDecodeBaseProposer:
                 num_tokens
             )
             num_input_tokens = batch_desc.num_tokens
+            self._clear_graph_padding(num_tokens, num_input_tokens)
             # Run the model.
             with set_forward_context(
                 per_layer_attn_metadata,
@@ -1494,8 +1512,13 @@ class SpecDecodeBaseProposer:
                     )
                 )
 
+            # Capture must not write draft KV cache slots. The persistent mapping
+            # buffer is reused at replay, so make all dummy tokens padding first.
+            if is_graph_capturing and self._draft_attn_layer_names:
+                self._slot_mapping_buffer[:num_input_tokens].fill_(PADDING_SLOT_ID)
+                slot_mapping_dict = self._get_slot_mapping(num_input_tokens)
             # Make sure to use EAGLE's own buffer during cudagraph capture.
-            if (
+            elif (
                 self._draft_attn_layer_names
                 and slot_mappings is not None
                 and next(iter(self._draft_attn_layer_names)) in slot_mappings

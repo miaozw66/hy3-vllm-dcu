@@ -336,7 +336,7 @@ class SpeculativeConfig:
 
         if hf_config.model_type == "hy_v3":
             hf_config.model_type = "hy_v3_mtp"
-            n_predict = getattr(hf_config, "num_nextn_predict_layers", None)
+            n_predict = getattr(hf_config, "num_nextn_predict_layers", 1)
             hf_config.update(
                 {"n_predict": n_predict, "architectures": ["HYV3MTPModel"]}
             )
